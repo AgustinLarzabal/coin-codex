@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { classifyPage, extractCoinCandidate } from "../src/core/extraction.js";
+import {
+  classifyPage,
+  ExtractionError,
+  extractCoinCandidate,
+} from "../src/core/extraction.js";
 
 describe("detail page extraction", () => {
   it("extracts raw and normalized coin identity fields from recognized coin detail fixtures", () => {
@@ -53,5 +57,20 @@ describe("detail page extraction", () => {
       issuedFromYear: 1870,
       issuedToYear: 1870,
     });
+  });
+
+  it("fails extraction for broken coin detail pages that are missing a title", () => {
+    const content = `
+<html>
+  <body>
+    <article data-page-kind="coin-detail">
+      <p>Issuer: République française</p>
+      <p>Denomination: 5 Francs</p>
+      <p>Year: 1870</p>
+    </article>
+  </body>
+</html>`.trim();
+
+    expect(() => extractCoinCandidate(content)).toThrowError(ExtractionError);
   });
 });

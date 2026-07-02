@@ -107,11 +107,14 @@ export const acceptedCoins = pgTable("accepted_coins", {
     .references(() => sources.id),
   sourceDetailUrl: text("source_detail_url").notNull(),
   sourceDetailUrlHash: text("source_detail_url_hash").notNull(),
+  name: text("name").notNull(),
   issuer: text("issuer").notNull(),
   denomination: text("denomination").notNull(),
   issuedFromYear: integer("issued_from_year").notNull(),
   issuedToYear: integer("issued_to_year").notNull(),
+  mintMark: text("mint_mark").notNull(),
   fingerprint: text("fingerprint").notNull(),
+  acceptedAt: timestamp("accepted_at", { withTimezone: true }).defaultNow().notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 

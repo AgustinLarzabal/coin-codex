@@ -88,6 +88,38 @@ const FIXTURES: Record<string, Record<string, string>> = {
   </body>
 </html>`.trim(),
   },
+  "fixture-acceptance-edge-cases": {
+    "https://private.example.test/coins": `
+<html>
+  <body>
+    <section data-page-kind="listing">
+      <a data-coin-detail-link="true" href="https://private.example.test/coins/missing-fields">Missing fields</a>
+      <a data-coin-detail-link="true" href="https://private.example.test/coins/broken-detail">Broken detail</a>
+    </section>
+  </body>
+</html>`.trim(),
+    "https://private.example.test/coins/missing-fields": `
+<html>
+  <body>
+    <article data-page-kind="coin-detail">
+      <h1>Missing Fields Coin</h1>
+      <p>Issuer: Example Issuer</p>
+      <p>Denomination: </p>
+      <p>Year: 1901</p>
+    </article>
+  </body>
+</html>`.trim(),
+    "https://private.example.test/coins/broken-detail": `
+<html>
+  <body>
+    <article data-page-kind="coin-detail">
+      <p>Issuer: Example Issuer</p>
+      <p>Denomination: 1 Unit</p>
+      <p>Year: 1901</p>
+    </article>
+  </body>
+</html>`.trim(),
+  },
   "fixture-catalog": {
     "https://private.example.test/coins?a=1&b=2": `
 <html>

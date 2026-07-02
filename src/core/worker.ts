@@ -59,8 +59,16 @@ function getRunStatus(jobStatuses: string[]): string {
 }
 
 function buildCandidateFingerprint(candidate: ExtractedCoinCandidate): string | null {
-  const { issuerNormalized, denominationNormalized, issuedFromYear, issuedToYear } = candidate;
+  const {
+    nameNormalized,
+    issuerNormalized,
+    denominationNormalized,
+    issuedFromYear,
+    issuedToYear,
+    mintMark,
+  } = candidate;
   if (
+    !nameNormalized ||
     !issuerNormalized ||
     !denominationNormalized ||
     issuedFromYear === null ||
@@ -71,10 +79,12 @@ function buildCandidateFingerprint(candidate: ExtractedCoinCandidate): string | 
 
   return sha256(
     [
+      nameNormalized.toLowerCase(),
       issuerNormalized.toLowerCase(),
       denominationNormalized.toLowerCase(),
       issuedFromYear,
       issuedToYear,
+      mintMark.toLowerCase(),
     ].join("|"),
   );
 }
@@ -301,40 +311,70 @@ export class Worker {
       throw new Error(`raw source page not found: ${payload.rawSourcePageId}`);
     }
 
-    const extracted = extractCoinCandidate(page.content);
-    const candidateId = randomUUID();
-    await this.db.insert(coinCandidates).values({
-      id: candidateId,
-      crawlRunId,
-      sourceId: payload.sourceId,
-      rawSourcePageId: page.id,
-      originalDetailUrl: page.originalUrl,
-      normalizedDetailUrl: page.normalizedUrl,
-      detailUrlHash: page.urlHash,
-      pageType: extracted.pageType,
-      title: extracted.nameNormalized,
-      nameRaw: extracted.nameRaw,
-      nameNormalized: extracted.nameNormalized,
-      issuer: extracted.issuerNormalized,
-      issuerRaw: extracted.issuerRaw,
-      issuerNormalized: extracted.issuerNormalized,
-      denomination: extracted.denominationNormalized,
-      denominationRaw: extracted.denominationRaw,
-      denominationNormalized: extracted.denominationNormalized,
-      rawDateText: extracted.rawDateText,
-      issuedFromYear: extracted.issuedFromYear,
-      issuedToYear: extracted.issuedToYear,
-      mintMark: extracted.mintMark,
-      imageUrl: extracted.imageUrl ?? null,
-      fingerprint: buildCandidateFingerprint(extracted),
-      status: COIN_CANDIDATE_STATUS.pending,
-      quarantineReason: null,
-    });
+    try {
+      const extracted = extractCoinCandidate(page.content);
+      const candidateId = randomUUID();
+      await this.db.insert(coinCandidates).values({
+        id: candidateId,
+        crawlRunId,
+        sourceId: payload.sourceId,
+        rawSourcePageId: page.id,
+        originalDetailUrl: page.originalUrl,
+        normalizedDetailUrl: page.normalizedUrl,
+        detailUrlHash: page.urlHash,
+        pageType: extracted.pageType,
+        title: extracted.nameNormalized,
+        nameRaw: extracted.nameRaw,
+        nameNormalized: extracted.nameNormalized,
+        issuer: extracted.issuerNormalized,
+        issuerRaw: extracted.issuerRaw,
+        issuerNormalized: extracted.issuerNormalized,
+        denomination: extracted.denominationNormalized,
+        denominationRaw: extracted.denominationRaw,
+        denominationNormalized: extracted.denominationNormalized,
+        rawDateText: extracted.rawDateText,
+        issuedFromYear: extracted.issuedFromYear,
+        issuedToYear: extracted.issuedToYear,
+        mintMark: extracted.mintMark,
+        imageUrl: extracted.imageUrl ?? null,
+        fingerprint: buildCandidateFingerprint(extracted),
+        status: COIN_CANDIDATE_STATUS.pending,
+        quarantineReason: null,
+      });
 
-    await this.enqueueJob(crawlRunId, ACCEPT_COIN_CANDIDATE_JOB_KIND, {
-      sourceId: payload.sourceId,
-      candidateId,
-    });
+      await this.enqueueJob(crawlRunId, ACCEPT_COIN_CANDIDATE_JOB_KIND, {
+        sourceId: payload.sourceId,
+        candidateId,
+      });
+    } catch {
+      await this.db.insert(coinCandidates).values({
+        id: randomUUID(),
+        crawlRunId,
+        sourceId: payload.sourceId,
+        rawSourcePageId: page.id,
+        originalDetailUrl: page.originalUrl,
+        normalizedDetailUrl: page.normalizedUrl,
+        detailUrlHash: page.urlHash,
+        pageType: page.pageType,
+        title: "",
+        nameRaw: "",
+        nameNormalized: "",
+        issuer: "",
+        issuerRaw: "",
+        issuerNormalized: "",
+        denomination: "",
+        denominationRaw: "",
+        denominationNormalized: "",
+        rawDateText: "",
+        issuedFromYear: null,
+        issuedToYear: null,
+        mintMark: "",
+        imageUrl: null,
+        fingerprint: null,
+        status: COIN_CANDIDATE_STATUS.quarantined,
+        quarantineReason: QUARANTINE_REASON.extractionFailure,
+      });
+    }
   }
 
   private async handleAccept(crawlRunId: string, payload: AcceptCoinCandidatePayload) {
@@ -351,9 +391,24 @@ export class Worker {
       const [existingAcceptedCoin] = await this.db
         .select()
         .from(acceptedCoins)
-        .where(eq(acceptedCoins.sourceDetailUrlHash, candidate.detailUrlHash));
+        .where(
+          and(
+            eq(acceptedCoins.sourceId, payload.sourceId),
+            eq(acceptedCoins.sourceDetailUrlHash, candidate.detailUrlHash),
+          ),
+        );
       if (existingAcceptedCoin) {
         quarantineReason = QUARANTINE_REASON.duplicateSourceDetailUrl;
+      }
+    }
+
+    if (!quarantineReason && candidate.fingerprint) {
+      const [existingFingerprintMatch] = await this.db
+        .select()
+        .from(acceptedCoins)
+        .where(eq(acceptedCoins.fingerprint, candidate.fingerprint));
+      if (existingFingerprintMatch) {
+        quarantineReason = QUARANTINE_REASON.duplicateFingerprint;
       }
     }
 
@@ -378,11 +433,14 @@ export class Worker {
       sourceId: payload.sourceId,
       sourceDetailUrl: candidate.normalizedDetailUrl,
       sourceDetailUrlHash: candidate.detailUrlHash,
+      name: candidate.nameNormalized,
       issuer: candidate.issuer,
       denomination: candidate.denomination,
       issuedFromYear: candidate.issuedFromYear,
       issuedToYear: candidate.issuedToYear,
+      mintMark: candidate.mintMark,
       fingerprint: candidate.fingerprint,
+      acceptedAt: new Date(),
     });
 
     await this.db

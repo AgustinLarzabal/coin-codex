@@ -23,6 +23,8 @@ type ExtractedFieldValue = {
   normalized: string;
 };
 
+export class ExtractionError extends Error {}
+
 function readAttr(content: string, attribute: string): string | undefined {
   const match = content.match(new RegExp(`${attribute}="([^"]+)"`, "i"));
   return match?.[1];
@@ -81,6 +83,11 @@ function parseYearRange(rawDateText: string): IssuedYearRange {
 }
 
 export function extractCoinCandidate(content: string): ExtractedCoinCandidate {
+  const pageType = classifyPage(content);
+  if (pageType === "coin-detail" && !content.match(/<h1>/i)) {
+    throw new ExtractionError("coin detail page missing title");
+  }
+
   const rawDateText = readField(content, "Year");
   const { issuedFromYear, issuedToYear } = parseYearRange(rawDateText);
   const name = readNormalizedTag(content, "h1");
@@ -89,7 +96,7 @@ export function extractCoinCandidate(content: string): ExtractedCoinCandidate {
   const mintMark = readNormalizedField(content, "Mint Mark");
 
   return {
-    pageType: classifyPage(content),
+    pageType,
     nameRaw: name.raw,
     nameNormalized: name.normalized,
     issuerRaw: issuer.raw,

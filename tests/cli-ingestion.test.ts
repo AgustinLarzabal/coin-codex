@@ -189,12 +189,15 @@ describe("CLI ingestion skeleton", () => {
     ]);
     expect(storedAcceptedCoins).toHaveLength(1);
     expect(storedAcceptedCoins[0]).toMatchObject({
+      name: "5 Francs Ceres",
       issuer: "République française",
       denomination: "5 Francs",
       issuedFromYear: 1870,
       issuedToYear: 1871,
+      mintMark: "A",
       sourceDetailUrl: "https://private.example.test/coins/ceres-5-francs",
     });
+    expect(storedAcceptedCoins[0].acceptedAt).toBeInstanceOf(Date);
     expect(storedImages).toHaveLength(1);
   });
 
@@ -339,12 +342,15 @@ describe("CLI ingestion skeleton", () => {
     ]);
     expect(storedAcceptedCoins).toHaveLength(1);
     expect(storedAcceptedCoins[0]).toMatchObject({
+      name: "Accepted Fixture Coin",
       issuer: "Example Issuer",
       denomination: "1 Unit",
       issuedFromYear: 1901,
       issuedToYear: 1901,
+      mintMark: "",
       sourceDetailUrl: "https://private.example.test/coins/accepted-coin",
     });
+    expect(storedAcceptedCoins[0].acceptedAt).toBeInstanceOf(Date);
     expect(storedImages).toHaveLength(1);
     expect(storedImages[0]).toMatchObject({
       acceptedCoinId: storedAcceptedCoins[0].id,
@@ -373,6 +379,216 @@ describe("CLI ingestion skeleton", () => {
     expect(debugInspectOutput).toContain("source_domain private.example.test");
     expect(debugInspectOutput).toContain("start_url https://private.example.test/coins");
     expect(debugInspectOutput).toContain("title Accepted Fixture Coin");
+  });
+
+  it("quarantines strong fingerprint matches from a different source instead of deduping by shared url alone", async () => {
+    const { databaseUrl, db } = await createDatabaseUrl();
+    const firstRunId = randomUUID();
+    const secondRunId = randomUUID();
+    const firstSourceId = "src_fixture_a";
+    const secondSourceId = "src_fixture_b";
+
+    await db.insert(sources).values([
+      {
+        id: firstSourceId,
+        config: {
+          adapter: "fake",
+          fixtureId: "fixture-run",
+          name: "Private Source A",
+          domain: "private.example.test",
+          startUrl: "https://private.example.test/coins",
+        },
+      },
+      {
+        id: secondSourceId,
+        config: {
+          adapter: "fake",
+          fixtureId: "fixture-run",
+          name: "Private Source B",
+          domain: "private.example.test",
+          startUrl: "https://private.example.test/coins",
+        },
+      },
+    ]);
+
+    await executeCli(
+      [
+        "create-run",
+        "--run-id",
+        firstRunId,
+        "--source-id",
+        firstSourceId,
+        "--scope",
+        "issuer_scope_a",
+      ],
+      { databaseUrl },
+    );
+    await runWorkerUntilEmpty(databaseUrl);
+
+    await executeCli(
+      [
+        "create-run",
+        "--run-id",
+        secondRunId,
+        "--source-id",
+        secondSourceId,
+        "--scope",
+        "issuer_scope_b",
+      ],
+      { databaseUrl },
+    );
+    await runWorkerUntilEmpty(databaseUrl);
+
+    const storedCandidates = await db
+      .select()
+      .from(coinCandidates)
+      .where(eq(coinCandidates.crawlRunId, secondRunId))
+      .orderBy(asc(coinCandidates.createdAt));
+    const storedAcceptedCoins = await db
+      .select()
+      .from(acceptedCoins)
+      .where(eq(acceptedCoins.crawlRunId, secondRunId))
+      .orderBy(asc(acceptedCoins.createdAt));
+
+    expect(storedAcceptedCoins).toHaveLength(0);
+    expect(storedCandidates).toMatchObject([
+      {
+        normalizedDetailUrl: "https://private.example.test/coins/accepted-coin",
+        status: "quarantined",
+        quarantineReason: "duplicate_fingerprint",
+      },
+      {
+        normalizedDetailUrl: "https://private.example.test/coins/quarantine-coin",
+        status: "quarantined",
+        quarantineReason: "invalid_year_range",
+      },
+    ]);
+  });
+
+  it("quarantines duplicate source detail urls only within the same source", async () => {
+    const { databaseUrl, db } = await createDatabaseUrl();
+    const firstRunId = randomUUID();
+    const secondRunId = randomUUID();
+    const sourceConfigPath = await writeSeedSourceFile({
+      adapter: "fake",
+      fixtureId: "fixture-run",
+      name: "Private Source Name",
+      domain: "private.example.test",
+      startUrl: "https://private.example.test/coins",
+    });
+
+    await executeCli(["seed-sources", "--file", sourceConfigPath], {
+      databaseUrl,
+    });
+
+    await executeCli(
+      [
+        "create-run",
+        "--run-id",
+        firstRunId,
+        "--source-id",
+        SEEDED_SOURCE_ID,
+        "--scope",
+        "issuer_scope_a",
+      ],
+      { databaseUrl },
+    );
+    await runWorkerUntilEmpty(databaseUrl);
+
+    await executeCli(
+      [
+        "create-run",
+        "--run-id",
+        secondRunId,
+        "--source-id",
+        SEEDED_SOURCE_ID,
+        "--scope",
+        "issuer_scope_b",
+      ],
+      { databaseUrl },
+    );
+    await runWorkerUntilEmpty(databaseUrl);
+
+    const storedCandidates = await db
+      .select()
+      .from(coinCandidates)
+      .where(eq(coinCandidates.crawlRunId, secondRunId))
+      .orderBy(asc(coinCandidates.createdAt));
+    const storedAcceptedCoins = await db
+      .select()
+      .from(acceptedCoins)
+      .where(eq(acceptedCoins.crawlRunId, secondRunId))
+      .orderBy(asc(acceptedCoins.createdAt));
+
+    expect(storedAcceptedCoins).toHaveLength(0);
+    expect(storedCandidates).toMatchObject([
+      {
+        normalizedDetailUrl: "https://private.example.test/coins/accepted-coin",
+        status: "quarantined",
+        quarantineReason: "duplicate_source_detail_url",
+      },
+      {
+        normalizedDetailUrl: "https://private.example.test/coins/quarantine-coin",
+        status: "quarantined",
+        quarantineReason: "invalid_year_range",
+      },
+    ]);
+  });
+
+  it("quarantines missing identity fields and extraction failures with actionable reasons", async () => {
+    const { databaseUrl, db } = await createDatabaseUrl();
+    const runId = randomUUID();
+    const sourceConfigPath = await writeSeedSourceFile({
+      adapter: "fake",
+      fixtureId: "fixture-acceptance-edge-cases",
+      name: "Private Source Name",
+      domain: "private.example.test",
+      startUrl: "https://private.example.test/coins",
+    });
+
+    await executeCli(["seed-sources", "--file", sourceConfigPath], {
+      databaseUrl,
+    });
+    await executeCli(
+      [
+        "create-run",
+        "--run-id",
+        runId,
+        "--source-id",
+        SEEDED_SOURCE_ID,
+        "--scope",
+        "issuer_scope",
+      ],
+      { databaseUrl },
+    );
+    await runWorkerUntilEmpty(databaseUrl);
+
+    const storedCandidates = await db
+      .select()
+      .from(coinCandidates)
+      .where(eq(coinCandidates.crawlRunId, runId))
+      .orderBy(asc(coinCandidates.createdAt));
+    const storedJobs = await db
+      .select()
+      .from(jobs)
+      .where(eq(jobs.crawlRunId, runId))
+      .orderBy(asc(jobs.createdAt));
+
+    expect(storedCandidates).toMatchObject([
+      {
+        normalizedDetailUrl: "https://private.example.test/coins/missing-fields",
+        status: "quarantined",
+        quarantineReason: "missing_identity_fields",
+      },
+      {
+        normalizedDetailUrl: "https://private.example.test/coins/broken-detail",
+        status: "quarantined",
+        quarantineReason: "extraction_failure",
+      },
+    ]);
+    expect(
+      storedJobs.filter((job) => job.kind === ACCEPT_COIN_CANDIDATE_JOB_KIND),
+    ).toHaveLength(1);
   });
 
   it("stores one listing page, fans out deterministic detail jobs, resumes from a saved cursor, and keeps inspection privacy-safe", async () => {

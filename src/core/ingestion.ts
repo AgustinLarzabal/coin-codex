@@ -55,6 +55,8 @@ export const QUARANTINE_REASON = {
   invalidYearRange: "invalid_year_range",
   missingIdentityFields: "missing_identity_fields",
   duplicateSourceDetailUrl: "duplicate_source_detail_url",
+  duplicateFingerprint: "duplicate_fingerprint",
+  extractionFailure: "extraction_failure",
 } as const;
 
 export type FetchRawSourcePagePayload = {

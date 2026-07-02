@@ -1,0 +1,4 @@
+ALTER TABLE accepted_coins
+  ADD COLUMN IF NOT EXISTS name text NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS mint_mark text NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS accepted_at timestamptz NOT NULL DEFAULT now();
