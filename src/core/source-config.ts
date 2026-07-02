@@ -11,34 +11,63 @@ export type SeedSourceRecord = {
   config: SourceConfig;
 };
 
-export function parseSourceConfig(value: unknown): SourceConfig {
+function readConfigObject(value: unknown, message: string): Record<string, unknown> {
   if (!value || typeof value !== "object") {
-    throw new Error("source config must be an object");
+    throw new Error(message);
   }
 
-  const config = value as Record<string, unknown>;
+  return value as Record<string, unknown>;
+}
+
+function readRequiredString(
+  record: Record<string, unknown>,
+  key: string,
+  message: string,
+): string {
+  const value = record[key];
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(message);
+  }
+
+  return value;
+}
+
+function readOptionalString(
+  record: Record<string, unknown>,
+  key: string,
+  message: string,
+): string | undefined {
+  const value = record[key];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "string") {
+    throw new Error(message);
+  }
+
+  return value;
+}
+
+export function parseSourceConfig(value: unknown): SourceConfig {
+  const config = readConfigObject(value, "source config must be an object");
   if (config.adapter !== "fake") {
     throw new Error("source config adapter must be fake");
-  }
-  if (typeof config.fixtureId !== "string" || config.fixtureId.length === 0) {
-    throw new Error("source config fixtureId must be a non-empty string");
-  }
-  if (typeof config.startUrl !== "string" || config.startUrl.length === 0) {
-    throw new Error("source config startUrl must be a non-empty string");
-  }
-  if (config.name !== undefined && typeof config.name !== "string") {
-    throw new Error("source config name must be a string");
-  }
-  if (config.domain !== undefined && typeof config.domain !== "string") {
-    throw new Error("source config domain must be a string");
   }
 
   return {
     adapter: "fake",
-    fixtureId: config.fixtureId,
-    name: config.name as string | undefined,
-    domain: config.domain as string | undefined,
-    startUrl: config.startUrl,
+    fixtureId: readRequiredString(
+      config,
+      "fixtureId",
+      "source config fixtureId must be a non-empty string",
+    ),
+    name: readOptionalString(config, "name", "source config name must be a string"),
+    domain: readOptionalString(config, "domain", "source config domain must be a string"),
+    startUrl: readRequiredString(
+      config,
+      "startUrl",
+      "source config startUrl must be a non-empty string",
+    ),
   };
 }
 
@@ -48,17 +77,10 @@ export function parseSeedSourceRecords(value: unknown): SeedSourceRecord[] {
   }
 
   return value.map((entry) => {
-    if (!entry || typeof entry !== "object") {
-      throw new Error("seed source entry must be an object");
-    }
-
-    const record = entry as Record<string, unknown>;
-    if (typeof record.id !== "string" || record.id.length === 0) {
-      throw new Error("seed source id must be a non-empty string");
-    }
+    const record = readConfigObject(entry, "seed source entry must be an object");
 
     return {
-      id: record.id,
+      id: readRequiredString(record, "id", "seed source id must be a non-empty string"),
       config: parseSourceConfig(record.config),
     };
   });

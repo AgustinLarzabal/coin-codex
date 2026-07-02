@@ -17,6 +17,7 @@ import { createDatabase, registerDatabase, unregisterDatabase } from "../src/db/
 import { jobs, rawSourcePages, sources } from "../src/db/schema.js";
 
 const resources: Array<{ databaseUrl: string; close: () => Promise<void> }> = [];
+const SEEDED_SOURCE_ID = "src_test_opaque";
 
 async function createDatabaseUrl() {
   const databaseUrl = `memory://${randomUUID()}`;
@@ -26,6 +27,29 @@ async function createDatabaseUrl() {
   await migrate(client);
   const db = createDatabase(client);
   return { databaseUrl, db };
+}
+
+async function writeSeedSourceFile() {
+  const privateDir = await mkdtemp(path.join(tmpdir(), "coincodex-private-"));
+  const sourceConfigPath = path.join(privateDir, "sources.json");
+
+  await writeFile(
+    sourceConfigPath,
+    JSON.stringify([
+      {
+        id: SEEDED_SOURCE_ID,
+        config: {
+          adapter: "fake",
+          fixtureId: "fixture-coin",
+          name: "Private Source Name",
+          domain: "private.example.test",
+          startUrl: "https://private.example.test/coins",
+        },
+      },
+    ]),
+  );
+
+  return sourceConfigPath;
 }
 
 afterEach(async () => {
@@ -41,24 +65,7 @@ describe("CLI ingestion skeleton", () => {
   it("seeds a private source config, uses it for a run, and only reveals private details in debug mode", async () => {
     const { databaseUrl, db } = await createDatabaseUrl();
     const runId = randomUUID();
-    const privateDir = await mkdtemp(path.join(tmpdir(), "coincodex-private-"));
-    const sourceConfigPath = path.join(privateDir, "sources.json");
-
-    await writeFile(
-      sourceConfigPath,
-      JSON.stringify([
-        {
-          id: "src_test_opaque",
-          config: {
-            adapter: "fake",
-            fixtureId: "fixture-coin",
-            name: "Private Source Name",
-            domain: "private.example.test",
-            startUrl: "https://private.example.test/coins",
-          },
-        },
-      ]),
-    );
+    const sourceConfigPath = await writeSeedSourceFile();
 
     const seedOutput = await executeCli(["seed-sources", "--file", sourceConfigPath], {
       databaseUrl,
@@ -66,7 +73,7 @@ describe("CLI ingestion skeleton", () => {
 
     expect(JSON.parse(seedOutput)).toMatchObject({
       seeded: 1,
-      sourceIds: ["src_test_opaque"],
+      sourceIds: [SEEDED_SOURCE_ID],
     });
 
     const createOutput = await executeCli(
@@ -75,7 +82,7 @@ describe("CLI ingestion skeleton", () => {
         "--run-id",
         runId,
         "--source-id",
-        "src_test_opaque",
+        SEEDED_SOURCE_ID,
         "--scope",
         "issuer_scope",
       ],
@@ -84,7 +91,7 @@ describe("CLI ingestion skeleton", () => {
 
     expect(JSON.parse(createOutput)).toMatchObject({
       runId,
-      sourceId: "src_test_opaque",
+      sourceId: SEEDED_SOURCE_ID,
       status: "queued",
     });
 
@@ -111,7 +118,7 @@ describe("CLI ingestion skeleton", () => {
     const [storedSource] = await db
       .select()
       .from(sources)
-      .where(eq(sources.id, "src_test_opaque"));
+      .where(eq(sources.id, SEEDED_SOURCE_ID));
 
     expect(storedJobs).toHaveLength(1);
     expect(storedJobs[0]).toMatchObject({
@@ -122,7 +129,7 @@ describe("CLI ingestion skeleton", () => {
     expect(storedJobs[0].lockedAt).toBeNull();
     expect(storedJobs[0].lockToken).toBeNull();
     expect(storedJobs[0].payload).toMatchObject({
-      sourceId: "src_test_opaque",
+      sourceId: SEEDED_SOURCE_ID,
       requestUrl: "https://private.example.test/coins",
     });
     expect(storedPages).toHaveLength(1);
@@ -140,7 +147,7 @@ describe("CLI ingestion skeleton", () => {
     });
 
     expect(inspectOutput).toContain(`run ${runId}`);
-    expect(inspectOutput).toContain("source src_test_opaque");
+    expect(inspectOutput).toContain(`source ${SEEDED_SOURCE_ID}`);
     expect(inspectOutput).toContain("status completed");
     expect(inspectOutput).toContain("raw_pages 1");
     expect(inspectOutput).not.toContain("Private Source Name");
