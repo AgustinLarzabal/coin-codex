@@ -1,5 +1,7 @@
 import type { SourceConfig } from "../source-config.js";
 
+export type ImageProviderPayload = Record<string, unknown>;
+
 export type DownloadImageInput = {
   sourceConfig: SourceConfig;
   imageUrl: string;
@@ -8,19 +10,18 @@ export type DownloadImageInput = {
 export type DownloadImageResult = {
   contentType: string | null;
   content: Uint8Array;
-  providerPayload: Record<string, unknown>;
+  providerPayload: ImageProviderPayload;
+};
+
+export type ImageProviderErrorDetails = {
+  code: string;
+  retryable: boolean;
+  statusCode?: number;
+  providerPayload?: ImageProviderPayload;
 };
 
 export class ImageProviderError extends Error {
-  constructor(
-    message: string,
-    readonly details: {
-      code: string;
-      retryable: boolean;
-      statusCode?: number;
-      providerPayload?: Record<string, unknown>;
-    },
-  ) {
+  constructor(message: string, readonly details: ImageProviderErrorDetails) {
     super(message);
   }
 }

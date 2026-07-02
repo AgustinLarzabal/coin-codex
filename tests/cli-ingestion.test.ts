@@ -34,12 +34,25 @@ import { createDatabase, registerDatabase, unregisterDatabase } from "../src/db/
 const resources: Array<{ databaseUrl: string; close: () => Promise<void> }> = [];
 const SEEDED_SOURCE_ID = "src_test_opaque";
 
+type StubImageProviderOptions = {
+  resolveContent?: (imageUrl: string) => Uint8Array;
+  onDownload?: (imageUrl: string) => void;
+  errorFactory?: (imageUrl: string) => ImageProviderError;
+};
+
 function createStubImageProviderFactory(
-  resolveContent: (imageUrl: string) => Uint8Array = (imageUrl) =>
-    new TextEncoder().encode(imageUrl),
+  options: StubImageProviderOptions = {},
 ): () => ImageProvider {
+  const resolveContent =
+    options.resolveContent ?? ((imageUrl: string) => new TextEncoder().encode(imageUrl));
+
   return () => ({
     async downloadImage({ imageUrl }) {
+      options.onDownload?.(imageUrl);
+      if (options.errorFactory) {
+        throw options.errorFactory(imageUrl);
+      }
+
       return {
         contentType: "image/jpeg",
         content: resolveContent(imageUrl),
@@ -534,16 +547,10 @@ describe("CLI ingestion skeleton", () => {
         throw new Error(`unexpected scrape url: ${url}`);
       },
     });
-    const imageProviderFactory = (): ImageProvider => ({
-      async downloadImage({ imageUrl }) {
+    const imageProviderFactory = createStubImageProviderFactory({
+      resolveContent: () => imagePayload,
+      onDownload: (imageUrl) => {
         imageCalls.push(imageUrl);
-        return {
-          contentType: "image/jpeg",
-          content: imagePayload,
-          providerPayload: {
-            adapter: "test-image-provider",
-          },
-        };
       },
     });
 
@@ -630,17 +637,16 @@ describe("CLI ingestion skeleton", () => {
   it("records and retries image download failures without reverting coin acceptance", async () => {
     const { databaseUrl, db } = await createDatabaseUrl();
     const runId = randomUUID();
-    const imageProviderFactory = (): ImageProvider => ({
-      async downloadImage({ imageUrl }) {
-        throw new ImageProviderError(`failed to download ${imageUrl}`, {
+    const imageProviderFactory = createStubImageProviderFactory({
+      errorFactory: (imageUrl) =>
+        new ImageProviderError(`failed to download ${imageUrl}`, {
           code: "IMAGE_TIMEOUT",
           retryable: true,
           statusCode: 504,
           providerPayload: {
             adapter: "test-image-provider",
           },
-        });
-      },
+        }),
     });
     const sourceConfigPath = await writeSeedSourceFile({
       adapter: "fake",

@@ -53,6 +53,8 @@ import {
 type CoinCandidateRecord = typeof coinCandidates.$inferSelect;
 type CoinCandidateInsert = typeof coinCandidates.$inferInsert;
 type RawSourcePageRecord = typeof rawSourcePages.$inferSelect;
+type AcceptedCoinRecord = typeof acceptedCoins.$inferSelect;
+type AcceptedCoinImageRecord = typeof acceptedCoinImages.$inferSelect;
 
 function sha256(input: string): string {
   return createHash("sha256").update(input).digest("hex");
@@ -505,26 +507,10 @@ export class Worker {
   }
 
   private async handleImage(crawlRunId: string, payload: DownloadAcceptedCoinImagePayload) {
-    const [acceptedCoin] = await this.db
-      .select()
-      .from(acceptedCoins)
-      .where(eq(acceptedCoins.id, payload.acceptedCoinId));
-    if (!acceptedCoin) {
-      throw new Error(`accepted coin not found: ${payload.acceptedCoinId}`);
-    }
-
-    const [candidate] = await this.db
-      .select()
-      .from(coinCandidates)
-      .where(eq(coinCandidates.id, acceptedCoin.candidateId));
-    if (!candidate) {
-      throw new Error(`coin candidate not found for accepted coin: ${acceptedCoin.id}`);
-    }
-
-    const [existingImage] = await this.db
-      .select()
-      .from(acceptedCoinImages)
-      .where(eq(acceptedCoinImages.acceptedCoinId, acceptedCoin.id));
+    const { acceptedCoin, candidate } = await this.readAcceptedCoinImageContext(
+      payload.acceptedCoinId,
+    );
+    const existingImage = await this.readAcceptedCoinImage(acceptedCoin.id);
     if (existingImage) {
       return;
     }
@@ -535,11 +521,7 @@ export class Worker {
       imageUrl: payload.imageUrl,
     });
     const contentHash = sha256Bytes(image.content);
-    const [duplicateImage] = await this.db
-      .select()
-      .from(acceptedCoinImages)
-      .where(eq(acceptedCoinImages.contentHash, contentHash))
-      .orderBy(asc(acceptedCoinImages.createdAt));
+    const duplicateImage = await this.readDuplicateAcceptedCoinImage(contentHash);
 
     await this.db.insert(acceptedCoinImages).values({
       id: randomUUID(),
@@ -553,6 +535,50 @@ export class Worker {
       contentHash,
       duplicateOfAcceptedCoinImageId: duplicateImage?.id ?? null,
     });
+  }
+
+  private async readAcceptedCoinImageContext(acceptedCoinId: string): Promise<{
+    acceptedCoin: AcceptedCoinRecord;
+    candidate: CoinCandidateRecord;
+  }> {
+    const [acceptedCoin] = await this.db
+      .select()
+      .from(acceptedCoins)
+      .where(eq(acceptedCoins.id, acceptedCoinId));
+    if (!acceptedCoin) {
+      throw new Error(`accepted coin not found: ${acceptedCoinId}`);
+    }
+
+    const [candidate] = await this.db
+      .select()
+      .from(coinCandidates)
+      .where(eq(coinCandidates.id, acceptedCoin.candidateId));
+    if (!candidate) {
+      throw new Error(`coin candidate not found for accepted coin: ${acceptedCoin.id}`);
+    }
+
+    return { acceptedCoin, candidate };
+  }
+
+  private async readAcceptedCoinImage(
+    acceptedCoinId: string,
+  ): Promise<AcceptedCoinImageRecord | undefined> {
+    const [acceptedCoinImage] = await this.db
+      .select()
+      .from(acceptedCoinImages)
+      .where(eq(acceptedCoinImages.acceptedCoinId, acceptedCoinId));
+    return acceptedCoinImage;
+  }
+
+  private async readDuplicateAcceptedCoinImage(
+    contentHash: string,
+  ): Promise<AcceptedCoinImageRecord | undefined> {
+    const [acceptedCoinImage] = await this.db
+      .select()
+      .from(acceptedCoinImages)
+      .where(eq(acceptedCoinImages.contentHash, contentHash))
+      .orderBy(asc(acceptedCoinImages.createdAt));
+    return acceptedCoinImage;
   }
 
   async runOnce() {
