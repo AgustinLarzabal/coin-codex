@@ -5,36 +5,48 @@ import { eq } from "drizzle-orm";
 import type { Database } from "../db/setup.js";
 import { crawlRuns, jobs, sources } from "../db/schema.js";
 import {
-  buildFixtureRequestUrl,
   CRAWL_RUN_STATUS,
   DEFAULT_JOB_MAX_ATTEMPTS,
   FETCH_RAW_SOURCE_PAGE_JOB_KIND,
   JOB_STATUS,
 } from "./ingestion.js";
+import { parseSourceConfig, type SeedSourceRecord } from "./source-config.js";
 
 type CreateRunInput = {
   runId: string;
   sourceId: string;
   scope: string;
-  fixtureId: string;
 };
 
 export class IngestionService {
   constructor(private readonly db: Database) {}
 
-  async createRun(input: CreateRunInput) {
-    const sourceConfig = { fixtureId: input.fixtureId };
+  async seedSources(records: SeedSourceRecord[]) {
+    for (const record of records) {
+      await this.db
+        .insert(sources)
+        .values({
+          id: record.id,
+          config: record.config,
+        })
+        .onConflictDoUpdate({
+          target: sources.id,
+          set: { config: record.config },
+        });
+    }
 
-    await this.db
-      .insert(sources)
-      .values({
-        id: input.sourceId,
-        config: sourceConfig,
-      })
-      .onConflictDoUpdate({
-        target: sources.id,
-        set: { config: sourceConfig },
-      });
+    return {
+      seeded: records.length,
+      sourceIds: records.map((record) => record.id),
+    };
+  }
+
+  async createRun(input: CreateRunInput) {
+    const [source] = await this.db.select().from(sources).where(eq(sources.id, input.sourceId));
+    if (!source) {
+      throw new Error(`source not found: ${input.sourceId}`);
+    }
+    const sourceConfig = parseSourceConfig(source.config);
 
     await this.db.insert(crawlRuns).values({
       id: input.runId,
@@ -56,8 +68,8 @@ export class IngestionService {
       availableAt: scheduledAt,
       payload: {
         sourceId: input.sourceId,
-        fixtureId: input.fixtureId,
-        requestUrl: buildFixtureRequestUrl(input.fixtureId),
+        fixtureId: sourceConfig.fixtureId,
+        requestUrl: sourceConfig.startUrl,
       },
     });
 

@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import process from "node:process";
 
 import { createAppContext } from "./core/context.js";
+import { parseSeedSourceRecords } from "./core/source-config.js";
 
 const DEFAULT_SOURCE_ID = "src_fixture";
 const DEFAULT_SCOPE = "default";
-const DEFAULT_FIXTURE_ID = "fixture-coin";
 
 type CliDeps = {
   databaseUrl?: string;
@@ -29,6 +30,11 @@ function readRequiredFlag(args: string[], name: string, command: string): string
   return value;
 }
 
+async function readSeedFile(path: string) {
+  const content = await readFile(path, "utf8");
+  return parseSeedSourceRecords(JSON.parse(content));
+}
+
 export async function executeCli(argv: string[], deps: CliDeps = {}): Promise<string> {
   const [command] = argv;
   if (!command) {
@@ -41,12 +47,16 @@ export async function executeCli(argv: string[], deps: CliDeps = {}): Promise<st
 
   try {
     switch (command) {
+      case "seed-sources": {
+        const records = await readSeedFile(readRequiredFlag(argv, "--file", command));
+        const output = await context.ingestionService.seedSources(records);
+        return JSON.stringify(output, null, 2);
+      }
       case "create-run": {
         const output = await context.ingestionService.createRun({
           runId: readFlag(argv, "--run-id") ?? randomUUID(),
           sourceId: readFlag(argv, "--source-id") ?? DEFAULT_SOURCE_ID,
           scope: readFlag(argv, "--scope") ?? DEFAULT_SCOPE,
-          fixtureId: readFlag(argv, "--fixture") ?? DEFAULT_FIXTURE_ID,
         });
         return JSON.stringify(output, null, 2);
       }
@@ -57,6 +67,7 @@ export async function executeCli(argv: string[], deps: CliDeps = {}): Promise<st
       case "inspect-run":
         return context.inspector.inspectRun(
           readRequiredFlag(argv, "--run-id", command),
+          { debugPrivate: argv.includes("--debug-private") },
         );
       default:
         throw new Error(`unknown command: ${command}`);

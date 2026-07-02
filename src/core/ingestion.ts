@@ -19,7 +19,3 @@ export type FetchRawSourcePagePayload = {
   fixtureId: string;
   requestUrl: string;
 };
-
-export function buildFixtureRequestUrl(fixtureId: string): string {
-  return `private://fixture/${fixtureId}`;
-}
