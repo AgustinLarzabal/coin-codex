@@ -126,11 +126,16 @@ export const acceptedCoinImages = pgTable("accepted_coin_images", {
   acceptedCoinId: text("accepted_coin_id")
     .notNull()
     .references(() => acceptedCoins.id),
+  rawSourcePageId: text("raw_source_page_id")
+    .notNull()
+    .references(() => rawSourcePages.id),
   sourceId: text("source_id")
     .notNull()
     .references(() => sources.id),
+  sourceDetailUrlHash: text("source_detail_url_hash").notNull(),
   sourceImageUrl: text("source_image_url").notNull(),
   sourceImageUrlHash: text("source_image_url_hash").notNull(),
   contentHash: text("content_hash").notNull(),
+  duplicateOfAcceptedCoinImageId: text("duplicate_of_accepted_coin_image_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });

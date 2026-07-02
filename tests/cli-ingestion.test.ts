@@ -15,6 +15,10 @@ import {
   FETCH_RAW_SOURCE_PAGE_JOB_KIND,
   JOB_STATUS,
 } from "../src/core/ingestion.js";
+import {
+  ImageProviderError,
+  type ImageProvider,
+} from "../src/core/providers/image-provider.js";
 import { migrate } from "../src/db/migrate.js";
 import {
   acceptedCoinImages,
@@ -29,6 +33,23 @@ import { createDatabase, registerDatabase, unregisterDatabase } from "../src/db/
 
 const resources: Array<{ databaseUrl: string; close: () => Promise<void> }> = [];
 const SEEDED_SOURCE_ID = "src_test_opaque";
+
+function createStubImageProviderFactory(
+  resolveContent: (imageUrl: string) => Uint8Array = (imageUrl) =>
+    new TextEncoder().encode(imageUrl),
+): () => ImageProvider {
+  return () => ({
+    async downloadImage({ imageUrl }) {
+      return {
+        contentType: "image/jpeg",
+        content: resolveContent(imageUrl),
+        providerPayload: {
+          adapter: "test-image-provider",
+        },
+      };
+    },
+  });
+}
 
 async function createDatabaseUrl() {
   const databaseUrl = `memory://${randomUUID()}`;
@@ -112,6 +133,7 @@ describe("CLI ingestion skeleton", () => {
   it("extracts rich coin candidates from fixture detail pages and quarantines specimen-like pages", async () => {
     const { databaseUrl, db } = await createDatabaseUrl();
     const runId = randomUUID();
+    const imageProviderFactory = createStubImageProviderFactory();
     const sourceConfigPath = await writeSeedSourceFile({
       adapter: "fake",
       fixtureId: "fixture-detail-pages",
@@ -122,6 +144,7 @@ describe("CLI ingestion skeleton", () => {
 
     await executeCli(["seed-sources", "--file", sourceConfigPath], {
       databaseUrl,
+      imageProviderFactory,
     });
 
     await executeCli(
@@ -134,10 +157,10 @@ describe("CLI ingestion skeleton", () => {
         "--scope",
         "issuer_scope",
       ],
-      { databaseUrl },
+      { databaseUrl, imageProviderFactory },
     );
 
-    await runWorkerUntilEmpty(databaseUrl);
+    const workerOutputs = await runWorkerUntilEmpty(databaseUrl, { imageProviderFactory });
 
     const storedCandidates = await db
       .select()
@@ -204,13 +227,18 @@ describe("CLI ingestion skeleton", () => {
   it("runs the source-private MVP workflow through fetch, extract, accept, quarantine, and accepted-only image handling", async () => {
     const { databaseUrl, db } = await createDatabaseUrl();
     const runId = randomUUID();
-    const sourceConfigPath = await writeSeedSourceFile(
-      "fixture-run",
-      "https://private.example.test/coins",
-    );
+    const imageProviderFactory = createStubImageProviderFactory();
+    const sourceConfigPath = await writeSeedSourceFile({
+      adapter: "fake",
+      fixtureId: "fixture-run",
+      name: "Private Source Name",
+      domain: "private.example.test",
+      startUrl: "https://private.example.test/coins",
+    });
 
     const seedOutput = await executeCli(["seed-sources", "--file", sourceConfigPath], {
       databaseUrl,
+      imageProviderFactory,
     });
 
     expect(JSON.parse(seedOutput)).toMatchObject({
@@ -230,7 +258,7 @@ describe("CLI ingestion skeleton", () => {
         "--detail-limit",
         "10",
       ],
-      { databaseUrl },
+      { databaseUrl, imageProviderFactory },
     );
 
     expect(JSON.parse(createOutput)).toMatchObject({
@@ -239,7 +267,7 @@ describe("CLI ingestion skeleton", () => {
       status: "queued",
     });
 
-    const workerOutputs = await runWorkerUntilEmpty(databaseUrl);
+    const workerOutputs = await runWorkerUntilEmpty(databaseUrl, { imageProviderFactory });
     expect(workerOutputs.at(0)).toMatchObject({
       processed: 1,
       runId,
@@ -247,10 +275,13 @@ describe("CLI ingestion skeleton", () => {
     });
     expect(workerOutputs.at(-1)).toMatchObject({ processed: 0 });
 
-    const inspectOutput = await executeCli(["inspect-run", "--run-id", runId], { databaseUrl });
+    const inspectOutput = await executeCli(
+      ["inspect-run", "--run-id", runId],
+      { databaseUrl, imageProviderFactory },
+    );
     const debugInspectOutput = await executeCli(
       ["inspect-run", "--run-id", runId, "--debug-private"],
-      { databaseUrl },
+      { databaseUrl, imageProviderFactory },
     );
 
     const storedJobs = await db
@@ -379,6 +410,294 @@ describe("CLI ingestion skeleton", () => {
     expect(debugInspectOutput).toContain("source_domain private.example.test");
     expect(debugInspectOutput).toContain("start_url https://private.example.test/coins");
     expect(debugInspectOutput).toContain("title Accepted Fixture Coin");
+  });
+
+  it("downloads images only for accepted coins and stores image attribution plus duplicate-content detection", async () => {
+    const { databaseUrl, db } = await createDatabaseUrl();
+    const runId = randomUUID();
+    const sourceConfigPath = await writeSeedSourceFile({
+      adapter: "firecrawl",
+      apiKey: "fc-test-key",
+      name: "Private Source Name",
+      domain: "private.example.test",
+      startUrl: "https://private.example.test/coins",
+      ratePolicy: {
+        minDelayMs: 0,
+        backoffBaseMs: 0,
+        attemptLimit: 2,
+      },
+    });
+
+    const imageCalls: string[] = [];
+    const imagePayload = new TextEncoder().encode("shared-image-binary");
+    const firecrawlClientFactory = () => ({
+      async scrapeUrl({ url }: { url: string }) {
+        if (url === "https://private.example.test/coins") {
+          return {
+            requestId: "req-listing",
+            data: {
+              html: `
+<html>
+  <body>
+    <section data-page-kind="listing">
+      <a data-coin-detail-link="true" href="https://private.example.test/coins/accepted-a">Accepted A</a>
+      <a data-coin-detail-link="true" href="https://private.example.test/coins/accepted-b">Accepted B</a>
+      <a data-coin-detail-link="true" href="https://private.example.test/coins/quarantine">Quarantine</a>
+    </section>
+  </body>
+</html>`.trim(),
+              links: [
+                "https://private.example.test/coins/accepted-a",
+                "https://private.example.test/coins/accepted-b",
+                "https://private.example.test/coins/quarantine",
+              ],
+              metadata: {
+                statusCode: 200,
+                title: "Image Listing",
+              },
+            },
+          };
+        }
+
+        if (url === "https://private.example.test/coins/accepted-a") {
+          return {
+            requestId: "req-accepted-a",
+            data: {
+              html: `
+<html>
+  <body>
+    <article data-page-kind="coin-detail" data-image-url="https://private.example.test/images/shared-a.jpg">
+      <h1>Accepted Image Coin A</h1>
+      <p>Issuer: Example Issuer</p>
+      <p>Denomination: 1 Unit</p>
+      <p>Year: 1901</p>
+    </article>
+  </body>
+</html>`.trim(),
+              links: [],
+              metadata: {
+                statusCode: 200,
+                title: "Accepted Image Coin A",
+              },
+            },
+          };
+        }
+
+        if (url === "https://private.example.test/coins/accepted-b") {
+          return {
+            requestId: "req-accepted-b",
+            data: {
+              html: `
+<html>
+  <body>
+    <article data-page-kind="coin-detail" data-image-url="https://private.example.test/images/shared-b.jpg">
+      <h1>Accepted Image Coin B</h1>
+      <p>Issuer: Example Issuer</p>
+      <p>Denomination: 2 Unit</p>
+      <p>Year: 1902</p>
+    </article>
+  </body>
+</html>`.trim(),
+              links: [],
+              metadata: {
+                statusCode: 200,
+                title: "Accepted Image Coin B",
+              },
+            },
+          };
+        }
+
+        if (url === "https://private.example.test/coins/quarantine") {
+          return {
+            requestId: "req-quarantine",
+            data: {
+              html: `
+<html>
+  <body>
+    <article data-page-kind="coin-detail" data-image-url="https://private.example.test/images/quarantine.jpg">
+      <h1>Quarantine Image Coin</h1>
+      <p>Issuer: Example Issuer</p>
+      <p>Denomination: </p>
+      <p>Year: 1905-1903</p>
+    </article>
+  </body>
+</html>`.trim(),
+              links: [],
+              metadata: {
+                statusCode: 200,
+                title: "Quarantine Image Coin",
+              },
+            },
+          };
+        }
+
+        throw new Error(`unexpected scrape url: ${url}`);
+      },
+    });
+    const imageProviderFactory = (): ImageProvider => ({
+      async downloadImage({ imageUrl }) {
+        imageCalls.push(imageUrl);
+        return {
+          contentType: "image/jpeg",
+          content: imagePayload,
+          providerPayload: {
+            adapter: "test-image-provider",
+          },
+        };
+      },
+    });
+
+    await executeCli(["seed-sources", "--file", sourceConfigPath], {
+      databaseUrl,
+      firecrawlClientFactory,
+      imageProviderFactory,
+    });
+    await executeCli(
+      [
+        "create-run",
+        "--run-id",
+        runId,
+        "--source-id",
+        SEEDED_SOURCE_ID,
+        "--scope",
+        "issuer_scope",
+      ],
+      { databaseUrl, firecrawlClientFactory, imageProviderFactory },
+    );
+    await runWorkerUntilEmpty(databaseUrl, {
+      firecrawlClientFactory,
+      imageProviderFactory,
+    });
+
+    const storedAcceptedCoins = await db
+      .select()
+      .from(acceptedCoins)
+      .where(eq(acceptedCoins.crawlRunId, runId))
+      .orderBy(asc(acceptedCoins.createdAt));
+    const storedCandidates = await db
+      .select()
+      .from(coinCandidates)
+      .where(eq(coinCandidates.crawlRunId, runId))
+      .orderBy(asc(coinCandidates.createdAt));
+    const storedImages = await db
+      .select()
+      .from(acceptedCoinImages)
+      .where(eq(acceptedCoinImages.crawlRunId, runId))
+      .orderBy(asc(acceptedCoinImages.createdAt));
+
+    expect(storedAcceptedCoins).toHaveLength(2);
+    expect(storedCandidates).toMatchObject([
+      {
+        normalizedDetailUrl: "https://private.example.test/coins/accepted-a",
+        status: "accepted",
+        imageUrl: "https://private.example.test/images/shared-a.jpg",
+      },
+      {
+        normalizedDetailUrl: "https://private.example.test/coins/accepted-b",
+        status: "accepted",
+        imageUrl: "https://private.example.test/images/shared-b.jpg",
+      },
+      {
+        normalizedDetailUrl: "https://private.example.test/coins/quarantine",
+        status: "quarantined",
+        imageUrl: "https://private.example.test/images/quarantine.jpg",
+      },
+    ]);
+    expect(imageCalls).toEqual([
+      "https://private.example.test/images/shared-a.jpg",
+      "https://private.example.test/images/shared-b.jpg",
+    ]);
+    expect(storedImages).toHaveLength(2);
+    expect(storedImages[0]).toMatchObject({
+      acceptedCoinId: storedAcceptedCoins[0].id,
+    });
+    expect(storedImages[1]).toMatchObject({
+      acceptedCoinId: storedAcceptedCoins[1].id,
+    });
+    expect(storedImages[0].contentHash).toBe(storedImages[1].contentHash);
+    expect(storedImages[1].duplicateOfAcceptedCoinImageId).toBe(storedImages[0].id);
+
+    const downloadJobs = await db
+      .select()
+      .from(jobs)
+      .where(eq(jobs.crawlRunId, runId))
+      .orderBy(asc(jobs.createdAt));
+    expect(
+      downloadJobs.filter((job) => job.kind === DOWNLOAD_ACCEPTED_COIN_IMAGE_JOB_KIND),
+    ).toHaveLength(2);
+  });
+
+  it("records and retries image download failures without reverting coin acceptance", async () => {
+    const { databaseUrl, db } = await createDatabaseUrl();
+    const runId = randomUUID();
+    const imageProviderFactory = (): ImageProvider => ({
+      async downloadImage({ imageUrl }) {
+        throw new ImageProviderError(`failed to download ${imageUrl}`, {
+          code: "IMAGE_TIMEOUT",
+          retryable: true,
+          statusCode: 504,
+          providerPayload: {
+            adapter: "test-image-provider",
+          },
+        });
+      },
+    });
+    const sourceConfigPath = await writeSeedSourceFile({
+      adapter: "fake",
+      fixtureId: "fixture-run",
+      name: "Private Source Name",
+      domain: "private.example.test",
+      startUrl: "https://private.example.test/coins",
+    });
+
+    await executeCli(["seed-sources", "--file", sourceConfigPath], {
+      databaseUrl,
+      imageProviderFactory,
+    });
+    await executeCli(
+      [
+        "create-run",
+        "--run-id",
+        runId,
+        "--source-id",
+        SEEDED_SOURCE_ID,
+        "--scope",
+        "issuer_scope",
+      ],
+      { databaseUrl, imageProviderFactory },
+    );
+    const workerOutputs = await runWorkerUntilEmpty(databaseUrl, { imageProviderFactory });
+
+    const storedAcceptedCoins = await db
+      .select()
+      .from(acceptedCoins)
+      .where(eq(acceptedCoins.crawlRunId, runId))
+      .orderBy(asc(acceptedCoins.createdAt));
+    const storedImages = await db
+      .select()
+      .from(acceptedCoinImages)
+      .where(eq(acceptedCoinImages.crawlRunId, runId))
+      .orderBy(asc(acceptedCoinImages.createdAt));
+    const storedJobs = await db
+      .select()
+      .from(jobs)
+      .where(eq(jobs.crawlRunId, runId))
+      .orderBy(asc(jobs.createdAt));
+    const downloadJob = storedJobs.find(
+      (job) => job.kind === DOWNLOAD_ACCEPTED_COIN_IMAGE_JOB_KIND,
+    );
+
+    expect(storedAcceptedCoins).toHaveLength(1);
+    expect(storedImages).toHaveLength(0);
+    expect(downloadJob).toMatchObject({
+      status: JOB_STATUS.failed,
+      attempts: 3,
+      errorPayload: {
+        code: "IMAGE_TIMEOUT",
+        retryable: true,
+        statusCode: 504,
+      },
+    });
   });
 
   it("quarantines strong fingerprint matches from a different source instead of deduping by shared url alone", async () => {
@@ -789,6 +1108,7 @@ describe("CLI ingestion skeleton", () => {
   it("integrates Firecrawl behind the crawl provider boundary, retries transient page failures, and isolates failed pages from the run", async () => {
     const { databaseUrl, db } = await createDatabaseUrl();
     const runId = randomUUID();
+    const imageProviderFactory = createStubImageProviderFactory();
     const sourceConfigPath = await writeSeedSourceFile({
       adapter: "firecrawl",
       apiKey: "fc-test-key",
@@ -871,6 +1191,7 @@ describe("CLI ingestion skeleton", () => {
     const seedOutput = await executeCli(["seed-sources", "--file", sourceConfigPath], {
       databaseUrl,
       firecrawlClientFactory,
+      imageProviderFactory,
     });
 
     expect(JSON.parse(seedOutput)).toMatchObject({
@@ -888,7 +1209,7 @@ describe("CLI ingestion skeleton", () => {
         "--scope",
         "issuer_scope",
       ],
-      { databaseUrl, firecrawlClientFactory },
+      { databaseUrl, firecrawlClientFactory, imageProviderFactory },
     );
 
     expect(JSON.parse(createOutput)).toMatchObject({
@@ -897,7 +1218,10 @@ describe("CLI ingestion skeleton", () => {
       status: "queued",
     });
 
-    const workerOutputs = await runWorkerUntilEmpty(databaseUrl, { firecrawlClientFactory });
+    const workerOutputs = await runWorkerUntilEmpty(databaseUrl, {
+      firecrawlClientFactory,
+      imageProviderFactory,
+    });
     expect(workerOutputs.some((output) => output.status === "failed")).toBe(true);
 
     const [run] = await db.select().from(crawlRuns).where(eq(crawlRuns.id, runId));

@@ -39,6 +39,10 @@ import {
 } from "./page-processing.js";
 import { CrawlProviderError, type CrawlProvider } from "./providers/crawl-provider.js";
 import {
+  ImageProviderError,
+  type ImageProvider,
+} from "./providers/image-provider.js";
+import {
   parseSourceConfig,
   readSourceAttemptLimit,
   readSourceFetchDelayMs,
@@ -207,6 +211,7 @@ export class Worker {
   constructor(
     private readonly db: Database,
     private readonly crawlProvider: CrawlProvider,
+    private readonly imageProvider: ImageProvider,
   ) {}
 
   private async enqueueJob(
@@ -508,14 +513,45 @@ export class Worker {
       throw new Error(`accepted coin not found: ${payload.acceptedCoinId}`);
     }
 
+    const [candidate] = await this.db
+      .select()
+      .from(coinCandidates)
+      .where(eq(coinCandidates.id, acceptedCoin.candidateId));
+    if (!candidate) {
+      throw new Error(`coin candidate not found for accepted coin: ${acceptedCoin.id}`);
+    }
+
+    const [existingImage] = await this.db
+      .select()
+      .from(acceptedCoinImages)
+      .where(eq(acceptedCoinImages.acceptedCoinId, acceptedCoin.id));
+    if (existingImage) {
+      return;
+    }
+
+    const sourceConfig = await this.readSourceConfig(payload.sourceId);
+    const image = await this.imageProvider.downloadImage({
+      sourceConfig,
+      imageUrl: payload.imageUrl,
+    });
+    const contentHash = sha256Bytes(image.content);
+    const [duplicateImage] = await this.db
+      .select()
+      .from(acceptedCoinImages)
+      .where(eq(acceptedCoinImages.contentHash, contentHash))
+      .orderBy(asc(acceptedCoinImages.createdAt));
+
     await this.db.insert(acceptedCoinImages).values({
       id: randomUUID(),
       crawlRunId,
       acceptedCoinId: acceptedCoin.id,
+      rawSourcePageId: candidate.rawSourcePageId,
       sourceId: payload.sourceId,
+      sourceDetailUrlHash: acceptedCoin.sourceDetailUrlHash,
       sourceImageUrl: payload.imageUrl,
       sourceImageUrlHash: sha256(payload.imageUrl),
-      contentHash: sha256(`image:${payload.imageUrl}`),
+      contentHash,
+      duplicateOfAcceptedCoinImageId: duplicateImage?.id ?? null,
     });
   }
 
@@ -638,6 +674,10 @@ function extractStoredDetailLinks(urls: string[], baseUrl: string): DetailLink[]
   return detailLinks;
 }
 
+function sha256Bytes(input: Uint8Array): string {
+  return createHash("sha256").update(input).digest("hex");
+}
+
 function buildJobErrorPayload(error: unknown): Record<string, unknown> {
   if (error instanceof CrawlProviderError) {
     return {
@@ -646,6 +686,16 @@ function buildJobErrorPayload(error: unknown): Record<string, unknown> {
       retryable: error.details.retryable,
       statusCode: error.details.statusCode ?? null,
       requestId: error.details.requestId ?? null,
+      providerPayload: error.details.providerPayload ?? null,
+    };
+  }
+
+  if (error instanceof ImageProviderError) {
+    return {
+      message: error.message,
+      code: error.details.code,
+      retryable: error.details.retryable,
+      statusCode: error.details.statusCode ?? null,
       providerPayload: error.details.providerPayload ?? null,
     };
   }
@@ -681,6 +731,10 @@ function readJobRetryDelayMs(
   sourceConfig: SourceConfig | null,
   nextAttempt: number,
 ): number {
+  if (jobKind === DOWNLOAD_ACCEPTED_COIN_IMAGE_JOB_KIND) {
+    return 0;
+  }
+
   if (jobKind === FETCH_RAW_SOURCE_PAGE_JOB_KIND && sourceConfig) {
     return readSourceRetryBackoffMs(sourceConfig, nextAttempt);
   }
