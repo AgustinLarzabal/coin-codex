@@ -46,6 +46,10 @@ import {
   type SourceConfig,
 } from "./source-config.js";
 
+type CoinCandidateRecord = typeof coinCandidates.$inferSelect;
+type CoinCandidateInsert = typeof coinCandidates.$inferInsert;
+type RawSourcePageRecord = typeof rawSourcePages.$inferSelect;
+
 function sha256(input: string): string {
   return createHash("sha256").update(input).digest("hex");
 }
@@ -89,7 +93,7 @@ function buildCandidateFingerprint(candidate: ExtractedCoinCandidate): string | 
   );
 }
 
-function getQuarantineReason(candidate: typeof coinCandidates.$inferSelect): string | null {
+function getQuarantineReason(candidate: CoinCandidateRecord): string | null {
   if (candidate.pageType !== "coin-detail") {
     return QUARANTINE_REASON.unrecognizedPageType;
   }
@@ -115,8 +119,8 @@ function getQuarantineReason(candidate: typeof coinCandidates.$inferSelect): str
 }
 
 function assertAcceptedCandidate(
-  candidate: typeof coinCandidates.$inferSelect,
-): asserts candidate is typeof coinCandidates.$inferSelect & {
+  candidate: CoinCandidateRecord,
+): asserts candidate is CoinCandidateRecord & {
   issuedFromYear: number;
   issuedToYear: number;
   fingerprint: string;
@@ -128,6 +132,75 @@ function assertAcceptedCandidate(
   ) {
     throw new Error(`accepted candidate missing required fields: ${candidate.id}`);
   }
+}
+
+function buildExtractedCandidateRow(
+  crawlRunId: string,
+  sourceId: string,
+  page: RawSourcePageRecord,
+  extracted: ExtractedCoinCandidate,
+): CoinCandidateInsert {
+  return {
+    id: randomUUID(),
+    crawlRunId,
+    sourceId,
+    rawSourcePageId: page.id,
+    originalDetailUrl: page.originalUrl,
+    normalizedDetailUrl: page.normalizedUrl,
+    detailUrlHash: page.urlHash,
+    pageType: extracted.pageType,
+    title: extracted.nameNormalized,
+    nameRaw: extracted.nameRaw,
+    nameNormalized: extracted.nameNormalized,
+    issuer: extracted.issuerNormalized,
+    issuerRaw: extracted.issuerRaw,
+    issuerNormalized: extracted.issuerNormalized,
+    denomination: extracted.denominationNormalized,
+    denominationRaw: extracted.denominationRaw,
+    denominationNormalized: extracted.denominationNormalized,
+    rawDateText: extracted.rawDateText,
+    issuedFromYear: extracted.issuedFromYear,
+    issuedToYear: extracted.issuedToYear,
+    mintMark: extracted.mintMark,
+    imageUrl: extracted.imageUrl ?? null,
+    fingerprint: buildCandidateFingerprint(extracted),
+    status: COIN_CANDIDATE_STATUS.pending,
+    quarantineReason: null,
+  };
+}
+
+function buildExtractionFailureCandidateRow(
+  crawlRunId: string,
+  sourceId: string,
+  page: RawSourcePageRecord,
+): CoinCandidateInsert {
+  return {
+    id: randomUUID(),
+    crawlRunId,
+    sourceId,
+    rawSourcePageId: page.id,
+    originalDetailUrl: page.originalUrl,
+    normalizedDetailUrl: page.normalizedUrl,
+    detailUrlHash: page.urlHash,
+    pageType: page.pageType,
+    title: "",
+    nameRaw: "",
+    nameNormalized: "",
+    issuer: "",
+    issuerRaw: "",
+    issuerNormalized: "",
+    denomination: "",
+    denominationRaw: "",
+    denominationNormalized: "",
+    rawDateText: "",
+    issuedFromYear: null,
+    issuedToYear: null,
+    mintMark: "",
+    imageUrl: null,
+    fingerprint: null,
+    status: COIN_CANDIDATE_STATUS.quarantined,
+    quarantineReason: QUARANTINE_REASON.extractionFailure,
+  };
 }
 
 export class Worker {
@@ -313,68 +386,44 @@ export class Worker {
 
     try {
       const extracted = extractCoinCandidate(page.content);
-      const candidateId = randomUUID();
-      await this.db.insert(coinCandidates).values({
-        id: candidateId,
+      const candidate = buildExtractedCandidateRow(
         crawlRunId,
-        sourceId: payload.sourceId,
-        rawSourcePageId: page.id,
-        originalDetailUrl: page.originalUrl,
-        normalizedDetailUrl: page.normalizedUrl,
-        detailUrlHash: page.urlHash,
-        pageType: extracted.pageType,
-        title: extracted.nameNormalized,
-        nameRaw: extracted.nameRaw,
-        nameNormalized: extracted.nameNormalized,
-        issuer: extracted.issuerNormalized,
-        issuerRaw: extracted.issuerRaw,
-        issuerNormalized: extracted.issuerNormalized,
-        denomination: extracted.denominationNormalized,
-        denominationRaw: extracted.denominationRaw,
-        denominationNormalized: extracted.denominationNormalized,
-        rawDateText: extracted.rawDateText,
-        issuedFromYear: extracted.issuedFromYear,
-        issuedToYear: extracted.issuedToYear,
-        mintMark: extracted.mintMark,
-        imageUrl: extracted.imageUrl ?? null,
-        fingerprint: buildCandidateFingerprint(extracted),
-        status: COIN_CANDIDATE_STATUS.pending,
-        quarantineReason: null,
-      });
+        payload.sourceId,
+        page,
+        extracted,
+      );
+      await this.db.insert(coinCandidates).values(candidate);
 
       await this.enqueueJob(crawlRunId, ACCEPT_COIN_CANDIDATE_JOB_KIND, {
         sourceId: payload.sourceId,
-        candidateId,
+        candidateId: candidate.id,
       });
     } catch {
-      await this.db.insert(coinCandidates).values({
-        id: randomUUID(),
-        crawlRunId,
-        sourceId: payload.sourceId,
-        rawSourcePageId: page.id,
-        originalDetailUrl: page.originalUrl,
-        normalizedDetailUrl: page.normalizedUrl,
-        detailUrlHash: page.urlHash,
-        pageType: page.pageType,
-        title: "",
-        nameRaw: "",
-        nameNormalized: "",
-        issuer: "",
-        issuerRaw: "",
-        issuerNormalized: "",
-        denomination: "",
-        denominationRaw: "",
-        denominationNormalized: "",
-        rawDateText: "",
-        issuedFromYear: null,
-        issuedToYear: null,
-        mintMark: "",
-        imageUrl: null,
-        fingerprint: null,
-        status: COIN_CANDIDATE_STATUS.quarantined,
-        quarantineReason: QUARANTINE_REASON.extractionFailure,
-      });
+      await this.db.insert(coinCandidates).values(
+        buildExtractionFailureCandidateRow(crawlRunId, payload.sourceId, page),
+      );
     }
+  }
+
+  private async hasAcceptedCoinForSourceDetailUrl(sourceId: string, detailUrlHash: string) {
+    const [existingAcceptedCoin] = await this.db
+      .select()
+      .from(acceptedCoins)
+      .where(
+        and(
+          eq(acceptedCoins.sourceId, sourceId),
+          eq(acceptedCoins.sourceDetailUrlHash, detailUrlHash),
+        ),
+      );
+    return existingAcceptedCoin !== undefined;
+  }
+
+  private async hasAcceptedCoinForFingerprint(fingerprint: string) {
+    const [existingAcceptedCoin] = await this.db
+      .select()
+      .from(acceptedCoins)
+      .where(eq(acceptedCoins.fingerprint, fingerprint));
+    return existingAcceptedCoin !== undefined;
   }
 
   private async handleAccept(crawlRunId: string, payload: AcceptCoinCandidatePayload) {
@@ -387,29 +436,19 @@ export class Worker {
     }
 
     let quarantineReason = getQuarantineReason(candidate);
-    if (!quarantineReason) {
-      const [existingAcceptedCoin] = await this.db
-        .select()
-        .from(acceptedCoins)
-        .where(
-          and(
-            eq(acceptedCoins.sourceId, payload.sourceId),
-            eq(acceptedCoins.sourceDetailUrlHash, candidate.detailUrlHash),
-          ),
-        );
-      if (existingAcceptedCoin) {
-        quarantineReason = QUARANTINE_REASON.duplicateSourceDetailUrl;
-      }
+    if (
+      !quarantineReason &&
+      (await this.hasAcceptedCoinForSourceDetailUrl(payload.sourceId, candidate.detailUrlHash))
+    ) {
+      quarantineReason = QUARANTINE_REASON.duplicateSourceDetailUrl;
     }
 
-    if (!quarantineReason && candidate.fingerprint) {
-      const [existingFingerprintMatch] = await this.db
-        .select()
-        .from(acceptedCoins)
-        .where(eq(acceptedCoins.fingerprint, candidate.fingerprint));
-      if (existingFingerprintMatch) {
-        quarantineReason = QUARANTINE_REASON.duplicateFingerprint;
-      }
+    if (
+      !quarantineReason &&
+      candidate.fingerprint &&
+      (await this.hasAcceptedCoinForFingerprint(candidate.fingerprint))
+    ) {
+      quarantineReason = QUARANTINE_REASON.duplicateFingerprint;
     }
 
     if (quarantineReason) {
