@@ -1,6 +1,7 @@
 import { RAW_PAGE_TYPE, type CrawlCursor, type RawPageType } from "./ingestion.js";
 
 const DETAIL_LINK_HREF_PATTERN = /<a\b[^>]*href="([^"]+)"[^>]*>/gi;
+const DETAIL_PAGE_KIND_PATTERN = /data-page-kind="[^"]*detail"/i;
 
 export type DetailLink = {
   originalUrl: string;
@@ -33,7 +34,7 @@ export function classifyRawPage(content: string): RawPageType {
   if (content.includes('data-page-kind="listing"')) {
     return RAW_PAGE_TYPE.listing;
   }
-  if (/data-page-kind="[^"]*detail"/i.test(content)) {
+  if (DETAIL_PAGE_KIND_PATTERN.test(content)) {
     return RAW_PAGE_TYPE.detail;
   }
 

@@ -18,6 +18,11 @@ export type ExtractedCoinCandidate = {
   imageUrl: string | undefined;
 };
 
+type ExtractedFieldValue = {
+  raw: string;
+  normalized: string;
+};
+
 function readAttr(content: string, attribute: string): string | undefined {
   const match = content.match(new RegExp(`${attribute}="([^"]+)"`, "i"));
   return match?.[1];
@@ -48,6 +53,22 @@ function normalizeFieldValue(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
+function readNormalizedField(content: string, label: string): ExtractedFieldValue {
+  const raw = readField(content, label);
+  return {
+    raw,
+    normalized: normalizeFieldValue(raw),
+  };
+}
+
+function readNormalizedTag(content: string, tag: string): ExtractedFieldValue {
+  const raw = readTag(content, tag);
+  return {
+    raw,
+    normalized: normalizeFieldValue(raw),
+  };
+}
+
 function parseYearRange(rawDateText: string): IssuedYearRange {
   const match = normalizeFieldValue(rawDateText).match(/^(\d{4})(?:\s*[-–]\s*(\d{4}))?$/);
   if (!match) {
@@ -62,23 +83,23 @@ function parseYearRange(rawDateText: string): IssuedYearRange {
 export function extractCoinCandidate(content: string): ExtractedCoinCandidate {
   const rawDateText = readField(content, "Year");
   const { issuedFromYear, issuedToYear } = parseYearRange(rawDateText);
-  const nameRaw = readTag(content, "h1");
-  const issuerRaw = readField(content, "Issuer");
-  const denominationRaw = readField(content, "Denomination");
-  const mintMark = readField(content, "Mint Mark");
+  const name = readNormalizedTag(content, "h1");
+  const issuer = readNormalizedField(content, "Issuer");
+  const denomination = readNormalizedField(content, "Denomination");
+  const mintMark = readNormalizedField(content, "Mint Mark");
 
   return {
     pageType: classifyPage(content),
-    nameRaw,
-    nameNormalized: normalizeFieldValue(nameRaw),
-    issuerRaw,
-    issuerNormalized: normalizeFieldValue(issuerRaw),
-    denominationRaw,
-    denominationNormalized: normalizeFieldValue(denominationRaw),
+    nameRaw: name.raw,
+    nameNormalized: name.normalized,
+    issuerRaw: issuer.raw,
+    issuerNormalized: issuer.normalized,
+    denominationRaw: denomination.raw,
+    denominationNormalized: denomination.normalized,
     rawDateText,
     issuedFromYear,
     issuedToYear,
-    mintMark: normalizeFieldValue(mintMark),
+    mintMark: mintMark.normalized,
     imageUrl: readAttr(content, "data-image-url"),
   };
 }
