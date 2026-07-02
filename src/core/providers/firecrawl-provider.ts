@@ -44,11 +44,12 @@ export class HttpFirecrawlClient implements FirecrawlClient {
     const data = readOptionalRecord(body, "data");
     const metadata = data ? readOptionalRecord(data, "metadata") : undefined;
     const providerPayload = {
-      adapter: "firecrawl",
-      requestId: requestId ?? null,
-      statusCode: typeof metadata?.statusCode === "number" ? metadata.statusCode : response.status,
-      metadata: metadata ?? {},
-      links: data?.links ?? [],
+      ...buildProviderPayload({
+        requestId,
+        metadata,
+        links: readLinks(data?.links),
+        fallbackStatusCode: response.status,
+      }),
       success: body.success === true,
       error: readOptionalString(body, "error") ?? readOptionalString(metadata, "error") ?? null,
     };
@@ -58,7 +59,7 @@ export class HttpFirecrawlClient implements FirecrawlClient {
         readOptionalString(body, "error") ?? `firecrawl request failed with status ${response.status}`,
         {
           code: readOptionalString(body, "code") ?? "FIRECRAWL_REQUEST_FAILED",
-          retryable: response.status === 429 || response.status >= 500 || response.status === 408,
+          retryable: isRetryableStatusCode(response.status),
           statusCode: response.status,
           requestId: requestId ?? undefined,
           providerPayload,
@@ -71,7 +72,7 @@ export class HttpFirecrawlClient implements FirecrawlClient {
       requestId,
       data: {
         html: readOptionalString(data, "html"),
-        links: Array.isArray(data?.links) ? (data.links as string[]) : [],
+        links: readLinks(data?.links),
         metadata: metadata ?? {},
       },
     };
@@ -104,16 +105,11 @@ export class FirecrawlProvider implements CrawlProvider {
           code: "FIRECRAWL_EMPTY_HTML",
           retryable: false,
           requestId: response.requestId,
-          providerPayload: {
-            adapter: "firecrawl",
-            requestId: response.requestId ?? null,
-            statusCode:
-              typeof response.data?.metadata?.statusCode === "number"
-                ? response.data.metadata.statusCode
-                : null,
-            metadata: response.data?.metadata ?? {},
+          providerPayload: buildProviderPayload({
+            requestId: response.requestId,
+            metadata: response.data?.metadata,
             links: response.data?.links ?? [],
-          },
+          }),
         });
       }
 
@@ -122,16 +118,11 @@ export class FirecrawlProvider implements CrawlProvider {
         normalizedUrl: normalizeUrl(requestUrl),
         content: html,
         extractedLinks: response.data?.links ?? [],
-        providerPayload: {
-          adapter: "firecrawl",
-          requestId: response.requestId ?? null,
-          statusCode:
-            typeof response.data?.metadata?.statusCode === "number"
-              ? response.data.metadata.statusCode
-              : null,
-          metadata: response.data?.metadata ?? {},
+        providerPayload: buildProviderPayload({
+          requestId: response.requestId,
+          metadata: response.data?.metadata,
           links: response.data?.links ?? [],
-        },
+        }),
       };
     } catch (error) {
       if (error instanceof CrawlProviderError) {
@@ -155,18 +146,46 @@ export class FirecrawlProvider implements CrawlProvider {
         error instanceof Error ? error.message : String(error),
         {
           code,
-          retryable: statusCode === 429 || statusCode === 408 || (statusCode ?? 0) >= 500,
+          retryable: isRetryableStatusCode(statusCode),
           statusCode,
           requestId,
-          providerPayload: {
-            adapter: "firecrawl",
-            requestId: requestId ?? null,
-            statusCode: statusCode ?? null,
-          },
+          providerPayload: buildProviderPayload({ requestId, statusCode }),
         },
       );
     }
   }
+}
+
+function buildProviderPayload(input: {
+  requestId?: string;
+  metadata?: Record<string, unknown>;
+  links?: string[];
+  statusCode?: number;
+  fallbackStatusCode?: number;
+}) {
+  return {
+    adapter: "firecrawl" as const,
+    requestId: input.requestId ?? null,
+    statusCode:
+      input.statusCode ??
+      readMetadataStatusCode(input.metadata) ??
+      input.fallbackStatusCode ??
+      null,
+    metadata: input.metadata ?? {},
+    links: input.links ?? [],
+  };
+}
+
+function isRetryableStatusCode(statusCode: number | undefined): boolean {
+  if (statusCode === undefined) {
+    return false;
+  }
+
+  return statusCode === 408 || statusCode === 429 || statusCode >= 500;
+}
+
+function readMetadataStatusCode(metadata: Record<string, unknown> | undefined): number | undefined {
+  return typeof metadata?.statusCode === "number" ? metadata.statusCode : undefined;
 }
 
 function readOptionalRecord(
@@ -187,4 +206,12 @@ function readOptionalString(
 ): string | undefined {
   const value = record?.[key];
   return typeof value === "string" ? value : undefined;
+}
+
+function readLinks(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter((entry): entry is string => typeof entry === "string");
 }

@@ -16,11 +16,10 @@ export class AppCrawlProvider implements CrawlProvider {
   }
 
   private selectProvider(sourceConfig: SourceConfig): CrawlProvider {
-    switch (sourceConfig.adapter) {
-      case "fake":
-        return this.fakeProvider;
-      case "firecrawl":
-        return this.firecrawlProvider;
+    if (sourceConfig.adapter === "fake") {
+      return this.fakeProvider;
     }
+
+    return this.firecrawlProvider;
   }
 }

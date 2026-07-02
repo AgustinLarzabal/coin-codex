@@ -496,22 +496,13 @@ export class Worker {
       const nextAttempt = job.attempts + 1;
       const sourceId = readJobSourceId(job.payload);
       const sourceConfig = sourceId ? await this.readSourceConfig(sourceId) : null;
-      const retryableError = error instanceof CrawlProviderError ? error : null;
-      const shouldRetry =
-        job.kind === FETCH_RAW_SOURCE_PAGE_JOB_KIND
-          ? nextAttempt < job.maxAttempts && retryableError?.details.retryable === true
-          : nextAttempt < job.maxAttempts;
-
+      const shouldRetry = shouldRetryJob(job.kind, nextAttempt, job.maxAttempts, error);
+      const retryDelayMs = readJobRetryDelayMs(job.kind, sourceConfig, nextAttempt);
       await this.db
         .update(jobs)
         .set({
           status: shouldRetry ? JOB_STATUS.queued : JOB_STATUS.failed,
-          availableAt: new Date(
-            Date.now() +
-              (job.kind === FETCH_RAW_SOURCE_PAGE_JOB_KIND && sourceConfig
-                ? readSourceRetryBackoffMs(sourceConfig, nextAttempt)
-                : nextAttempt * 1_000),
-          ),
+          availableAt: new Date(Date.now() + retryDelayMs),
           lockedAt: null,
           lockToken: null,
           errorPayload: buildJobErrorPayload(error),
@@ -569,4 +560,33 @@ function buildJobErrorPayload(error: unknown): Record<string, unknown> {
 
 function readJobSourceId(payload: Record<string, unknown>): string | null {
   return typeof payload.sourceId === "string" ? payload.sourceId : null;
+}
+
+function shouldRetryJob(
+  jobKind: string,
+  nextAttempt: number,
+  maxAttempts: number,
+  error: unknown,
+): boolean {
+  if (nextAttempt >= maxAttempts) {
+    return false;
+  }
+
+  if (jobKind !== FETCH_RAW_SOURCE_PAGE_JOB_KIND) {
+    return true;
+  }
+
+  return error instanceof CrawlProviderError && error.details.retryable;
+}
+
+function readJobRetryDelayMs(
+  jobKind: string,
+  sourceConfig: SourceConfig | null,
+  nextAttempt: number,
+): number {
+  if (jobKind === FETCH_RAW_SOURCE_PAGE_JOB_KIND && sourceConfig) {
+    return readSourceRetryBackoffMs(sourceConfig, nextAttempt);
+  }
+
+  return nextAttempt * 1_000;
 }
