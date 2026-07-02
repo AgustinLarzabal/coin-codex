@@ -1,7 +1,15 @@
 import { asc, eq } from "drizzle-orm";
 
 import type { Database } from "../db/setup.js";
-import { crawlRuns, jobs, rawSourcePages, sources } from "../db/schema.js";
+import {
+  acceptedCoinImages,
+  acceptedCoins,
+  coinCandidates,
+  crawlRuns,
+  jobs,
+  rawSourcePages,
+  sources,
+} from "../db/schema.js";
 import { parseSourceConfig } from "./source-config.js";
 
 function redactHash(value: string): string {
@@ -38,6 +46,25 @@ export class IngestionInspector {
       .from(rawSourcePages)
       .where(eq(rawSourcePages.crawlRunId, runId))
       .orderBy(asc(rawSourcePages.fetchedAt));
+    const candidates = await this.db
+      .select()
+      .from(coinCandidates)
+      .where(eq(coinCandidates.crawlRunId, runId))
+      .orderBy(asc(coinCandidates.createdAt));
+    const accepted = await this.db
+      .select()
+      .from(acceptedCoins)
+      .where(eq(acceptedCoins.crawlRunId, runId))
+      .orderBy(asc(acceptedCoins.createdAt));
+    const images = await this.db
+      .select()
+      .from(acceptedCoinImages)
+      .where(eq(acceptedCoinImages.crawlRunId, runId))
+      .orderBy(asc(acceptedCoinImages.createdAt));
+    const acceptedCandidates = candidates.filter((candidate) => candidate.status === "accepted");
+    const quarantinedCandidates = candidates.filter(
+      (candidate) => candidate.status === "quarantined",
+    );
 
     const lines = [
       `run ${run.id}`,
@@ -45,6 +72,9 @@ export class IngestionInspector {
       `status ${run.status}`,
       `jobs ${runJobs.length}`,
       `raw_pages ${pages.length}`,
+      `candidates accepted=${acceptedCandidates.length} quarantined=${quarantinedCandidates.length}`,
+      `accepted_coins ${accepted.length}`,
+      `accepted_coin_images ${images.length}`,
     ];
     const debugPrivate = options.debugPrivate === true;
     const sourceConfig = source ? parseSourceConfig(source.config) : null;
@@ -77,6 +107,10 @@ export class IngestionInspector {
       if (job.errorPayload) {
         lines.push(`error ${JSON.stringify(job.errorPayload)}`);
       }
+    }
+
+    for (const candidate of quarantinedCandidates) {
+      lines.push(`candidate ${candidate.id} status=quarantined reason=${candidate.quarantineReason}`);
     }
 
     return lines.join("\n");
