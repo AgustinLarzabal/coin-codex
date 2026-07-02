@@ -32,6 +32,18 @@ export type CrawlCursor = {
   listingNormalizedUrl: string;
 };
 
+export function createCrawlCursor(listingNormalizedUrl = ""): CrawlCursor {
+  return {
+    nextDetailIndex: 0,
+    totalDetailLinks: 0,
+    listingNormalizedUrl,
+  };
+}
+
+export function clampDetailLimit(detailLimit: number): number {
+  return Math.min(detailLimit, MAX_DETAIL_PAGE_LIMIT);
+}
+
 export const COIN_CANDIDATE_STATUS = {
   pending: "pending",
   accepted: "accepted",

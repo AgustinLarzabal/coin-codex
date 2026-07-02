@@ -419,8 +419,12 @@ describe("CLI ingestion skeleton", () => {
       mode: "fake",
     });
     expect(storedPages[0].content).toContain("Catalog Listing");
-    expect(storedPages[0].originalUrl).toBe("HTTPS://private.example.test/coins?b=2&a=1#top");
-    expect(storedPages[0].normalizedUrl).toBe("https://private.example.test/coins?a=1&b=2");
+    expect(storedPages[0].originalUrl).toBe(
+      "HTTPS://private.example.test/coins?b=2&a=1#top",
+    );
+    expect(storedPages[0].normalizedUrl).toBe(
+      "https://private.example.test/coins?a=1&b=2",
+    );
     expect(storedPages[0].pageType).toBe("listing");
     expect(storedSource?.config).toMatchObject({
       adapter: "fake",
@@ -429,11 +433,11 @@ describe("CLI ingestion skeleton", () => {
       domain: "private.example.test",
       startUrl: "HTTPS://private.example.test/coins?b=2&a=1#top",
     });
-    expect(firstRun.cursor).toMatchObject({
+    expect(firstRun?.cursor).toMatchObject({
       nextDetailIndex: 10,
       totalDetailLinks: 12,
     });
-    expect(secondRun.cursor).toMatchObject({
+    expect(secondRun?.cursor).toMatchObject({
       nextDetailIndex: 12,
       totalDetailLinks: 12,
     });

@@ -1,5 +1,12 @@
 import { RAW_PAGE_TYPE, type CrawlCursor, type RawPageType } from "./ingestion.js";
 
+const DETAIL_LINK_HREF_PATTERN = /<a\b[^>]*href="([^"]+)"[^>]*>/gi;
+
+export type DetailLink = {
+  originalUrl: string;
+  normalizedUrl: string;
+};
+
 export function normalizeUrl(input: string, baseUrl?: string): string {
   const url = new URL(input, baseUrl);
   url.hash = "";
@@ -36,12 +43,11 @@ export function classifyRawPage(content: string): RawPageType {
 export function extractDetailLinks(
   content: string,
   baseUrl: string,
-): Array<{ originalUrl: string; normalizedUrl: string }> {
-  const hrefPattern = /<a\b[^>]*href="([^"]+)"[^>]*>/gi;
+): DetailLink[] {
   const seenNormalizedUrls = new Set<string>();
-  const detailLinks: Array<{ originalUrl: string; normalizedUrl: string }> = [];
+  const detailLinks: DetailLink[] = [];
 
-  for (const match of content.matchAll(hrefPattern)) {
+  for (const match of content.matchAll(DETAIL_LINK_HREF_PATTERN)) {
     const href = match[1];
     const originalUrl = new URL(href, baseUrl).toString();
     const normalizedUrl = normalizeUrl(originalUrl);

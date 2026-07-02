@@ -6,11 +6,12 @@ import type { Database } from "../db/setup.js";
 import { crawlRuns, jobs, sources } from "../db/schema.js";
 import {
   CRAWL_RUN_STATUS,
+  clampDetailLimit,
+  createCrawlCursor,
   type CrawlCursor,
   DEFAULT_JOB_MAX_ATTEMPTS,
   FETCH_RAW_SOURCE_PAGE_JOB_KIND,
   JOB_STATUS,
-  MAX_DETAIL_PAGE_LIMIT,
 } from "./ingestion.js";
 import { readStoredCursor } from "./page-processing.js";
 import { parseSourceConfig, type SeedSourceRecord } from "./source-config.js";
@@ -51,21 +52,8 @@ export class IngestionService {
       throw new Error(`source not found: ${input.sourceId}`);
     }
     const sourceConfig = parseSourceConfig(source.config);
-    const priorRuns = await this.db
-      .select({ cursor: crawlRuns.cursor })
-      .from(crawlRuns)
-      .where(and(eq(crawlRuns.sourceId, input.sourceId), eq(crawlRuns.scope, input.scope)))
-      .orderBy(desc(crawlRuns.createdAt))
-      .limit(10);
-    const previousCursor =
-      priorRuns
-        .map((run) => readStoredCursor(run.cursor))
-        .find((cursor): cursor is CrawlCursor => cursor !== null) ?? {
-        nextDetailIndex: 0,
-        totalDetailLinks: 0,
-        listingNormalizedUrl: "",
-      };
-    const detailLimit = Math.min(input.detailLimit, MAX_DETAIL_PAGE_LIMIT);
+    const previousCursor = await this.readPreviousCursor(input.sourceId, input.scope);
+    const detailLimit = clampDetailLimit(input.detailLimit);
 
     await this.db.insert(crawlRuns).values({
       id: input.runId,
@@ -110,5 +98,20 @@ export class IngestionService {
       detailLimit: run.detailLimit,
       jobId,
     };
+  }
+
+  private async readPreviousCursor(sourceId: string, scope: string): Promise<CrawlCursor> {
+    const priorRuns = await this.db
+      .select({ cursor: crawlRuns.cursor })
+      .from(crawlRuns)
+      .where(and(eq(crawlRuns.sourceId, sourceId), eq(crawlRuns.scope, scope)))
+      .orderBy(desc(crawlRuns.createdAt))
+      .limit(10);
+
+    return (
+      priorRuns
+        .map((run) => readStoredCursor(run.cursor))
+        .find((cursor): cursor is CrawlCursor => cursor !== null) ?? createCrawlCursor()
+    );
   }
 }

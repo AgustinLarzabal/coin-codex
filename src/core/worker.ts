@@ -15,12 +15,13 @@ import {
   ACCEPT_COIN_CANDIDATE_JOB_KIND,
   COIN_CANDIDATE_STATUS,
   CRAWL_RUN_STATUS,
+  clampDetailLimit,
+  createCrawlCursor,
   DEFAULT_JOB_MAX_ATTEMPTS,
   DOWNLOAD_ACCEPTED_COIN_IMAGE_JOB_KIND,
   EXTRACT_COIN_CANDIDATE_JOB_KIND,
   FETCH_RAW_SOURCE_PAGE_JOB_KIND,
   JOB_STATUS,
-  MAX_DETAIL_PAGE_LIMIT,
   QUARANTINE_REASON,
   RAW_PAGE_TYPE,
   type AcceptCoinCandidatePayload,
@@ -31,6 +32,7 @@ import {
 import { extractCoinCandidate, type ExtractedCoinCandidate } from "./extraction.js";
 import {
   classifyRawPage,
+  type DetailLink,
   extractDetailLinks,
   normalizeUrl,
   readStoredCursor,
@@ -189,35 +191,18 @@ export class Worker {
     content: string,
   ) {
     const detailLinks = extractDetailLinks(content, originalUrl);
-    const storedCursor = readStoredCursor(payload.cursor) ?? {
-      nextDetailIndex: 0,
-      totalDetailLinks: 0,
-      listingNormalizedUrl: normalizedUrl,
-    };
+    const storedCursor = readStoredCursor(payload.cursor) ?? createCrawlCursor(normalizedUrl);
     const nextIndex = Math.max(0, storedCursor.nextDetailIndex);
-    const detailLimit = Math.min(payload.detailLimit, MAX_DETAIL_PAGE_LIMIT);
+    const detailLimit = clampDetailLimit(payload.detailLimit);
     const selectedLinks = detailLinks.slice(nextIndex, nextIndex + detailLimit);
     const now = Date.now();
 
-    for (const [index, link] of selectedLinks.entries()) {
-      const scheduledAt = new Date(now + index);
-      await this.enqueueJob(
-        crawlRunId,
-        FETCH_RAW_SOURCE_PAGE_JOB_KIND,
-        {
-          sourceId: payload.sourceId,
-          fixtureId: payload.fixtureId,
-          requestUrl: link.normalizedUrl,
-          originalUrl: link.originalUrl,
-          pageRole: "detail",
-          detailLimit: payload.detailLimit,
-          cursor: {
-            nextDetailIndex: 0,
-            totalDetailLinks: 0,
-            listingNormalizedUrl: normalizedUrl,
-          },
-        },
-        scheduledAt,
+    if (selectedLinks.length > 0) {
+      await this.db.insert(jobs).values(
+        selectedLinks.map((link, index) => {
+          const scheduledAt = new Date(now + index);
+          return this.buildDetailJob(crawlRunId, payload, normalizedUrl, link, scheduledAt);
+        }),
       );
     }
 
@@ -232,6 +217,34 @@ export class Worker {
         updatedAt: new Date(),
       })
       .where(eq(crawlRuns.id, crawlRunId));
+  }
+
+  private buildDetailJob(
+    crawlRunId: string,
+    payload: FetchRawSourcePagePayload,
+    listingNormalizedUrl: string,
+    link: DetailLink,
+    scheduledAt: Date,
+  ) {
+    return {
+      id: randomUUID(),
+      crawlRunId,
+      kind: FETCH_RAW_SOURCE_PAGE_JOB_KIND,
+      status: JOB_STATUS.queued,
+      attempts: 0,
+      maxAttempts: DEFAULT_JOB_MAX_ATTEMPTS,
+      scheduledAt,
+      availableAt: scheduledAt,
+      payload: {
+        sourceId: payload.sourceId,
+        fixtureId: payload.fixtureId,
+        requestUrl: link.normalizedUrl,
+        originalUrl: link.originalUrl,
+        pageRole: "detail",
+        detailLimit: payload.detailLimit,
+        cursor: createCrawlCursor(listingNormalizedUrl),
+      },
+    };
   }
 
   private async handleExtract(crawlRunId: string, payload: ExtractCoinCandidatePayload) {
