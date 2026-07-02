@@ -33,7 +33,7 @@ export function classifyRawPage(content: string): RawPageType {
   if (content.includes('data-page-kind="listing"')) {
     return RAW_PAGE_TYPE.listing;
   }
-  if (content.includes('data-page-kind="coin-detail"')) {
+  if (/data-page-kind="[^"]*detail"/i.test(content)) {
     return RAW_PAGE_TYPE.detail;
   }
 

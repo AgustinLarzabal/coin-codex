@@ -56,13 +56,28 @@ function getRunStatus(jobStatuses: string[]): string {
 }
 
 function buildCandidateFingerprint(candidate: ExtractedCoinCandidate): string | null {
-  const { issuer, denomination, issuedFromYear, issuedToYear } = candidate;
-  if (!issuer || !denomination || issuedFromYear === null || issuedToYear === null) {
+  const {
+    issuerNormalized,
+    denominationNormalized,
+    issuedFromYear,
+    issuedToYear,
+  } = candidate;
+  if (
+    !issuerNormalized ||
+    !denominationNormalized ||
+    issuedFromYear === null ||
+    issuedToYear === null
+  ) {
     return null;
   }
 
   return sha256(
-    [issuer.toLowerCase(), denomination.toLowerCase(), issuedFromYear, issuedToYear].join("|"),
+    [
+      issuerNormalized.toLowerCase(),
+      denominationNormalized.toLowerCase(),
+      issuedFromYear,
+      issuedToYear,
+    ].join("|"),
   );
 }
 
@@ -175,7 +190,7 @@ export class Worker {
       await this.enqueueDetailJobs(crawlRunId, payload, originalUrl, normalizedUrl, page.content);
     }
 
-    if (pageType === RAW_PAGE_TYPE.detail) {
+    if (payload.pageRole === "detail") {
       await this.enqueueJob(crawlRunId, EXTRACT_COIN_CANDIDATE_JOB_KIND, {
         sourceId: payload.sourceId,
         rawSourcePageId,
@@ -263,15 +278,23 @@ export class Worker {
       crawlRunId,
       sourceId: payload.sourceId,
       rawSourcePageId: page.id,
+      originalDetailUrl: page.originalUrl,
       normalizedDetailUrl: page.normalizedUrl,
       detailUrlHash: page.urlHash,
       pageType: extracted.pageType,
-      title: extracted.title,
-      issuer: extracted.issuer,
-      denomination: extracted.denomination,
+      title: extracted.nameNormalized,
+      nameRaw: extracted.nameRaw,
+      nameNormalized: extracted.nameNormalized,
+      issuer: extracted.issuerNormalized,
+      issuerRaw: extracted.issuerRaw,
+      issuerNormalized: extracted.issuerNormalized,
+      denomination: extracted.denominationNormalized,
+      denominationRaw: extracted.denominationRaw,
+      denominationNormalized: extracted.denominationNormalized,
       rawDateText: extracted.rawDateText,
       issuedFromYear: extracted.issuedFromYear,
       issuedToYear: extracted.issuedToYear,
+      mintMark: extracted.mintMark,
       imageUrl: extracted.imageUrl ?? null,
       fingerprint: buildCandidateFingerprint(extracted),
       status: COIN_CANDIDATE_STATUS.pending,

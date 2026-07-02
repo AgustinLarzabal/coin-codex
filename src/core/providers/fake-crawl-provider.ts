@@ -45,6 +45,49 @@ const FIXTURES: Record<string, Record<string, string>> = {
   </body>
 </html>`.trim(),
   },
+  "fixture-detail-pages": {
+    "https://private.example.test/coins": `
+<html>
+  <body>
+    <section data-page-kind="listing">
+      <a data-coin-detail-link="true" href="https://private.example.test/coins/ceres-5-francs">Ceres 5 Francs</a>
+      <a data-coin-detail-link="true" href="https://private.example.test/coins/specimen-5-francs">Specimen 5 Francs</a>
+      <a data-coin-detail-link="true" href="https://private.example.test/coins/reference-note">Reference Note</a>
+    </section>
+  </body>
+</html>`.trim(),
+    "https://private.example.test/coins/ceres-5-francs": `
+<html>
+  <body>
+    <article data-page-kind="coin-detail" data-image-url="https://private.example.test/images/ceres-5-francs.jpg">
+      <h1>  5   Francs   Ceres </h1>
+      <p>Issuer: République   française</p>
+      <p>Denomination: 5 Francs</p>
+      <p>Year: 1870-1871</p>
+      <p>Mint Mark: A</p>
+    </article>
+  </body>
+</html>`.trim(),
+    "https://private.example.test/coins/specimen-5-francs": `
+<html>
+  <body>
+    <article data-page-kind="specimen-detail">
+      <h1> 5 Francs Specimen   PCGS MS64 </h1>
+      <p>Issuer: République française</p>
+      <p>Denomination: 5 Francs</p>
+      <p>Year: 1870</p>
+    </article>
+  </body>
+</html>`.trim(),
+    "https://private.example.test/coins/reference-note": `
+<html>
+  <body>
+    <article data-page-kind="reference-detail">
+      <h1>Minting   Reference Note</h1>
+    </article>
+  </body>
+</html>`.trim(),
+  },
   "fixture-catalog": {
     "https://private.example.test/coins?a=1&b=2": `
 <html>

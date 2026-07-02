@@ -40,22 +40,37 @@ async function createDatabaseUrl() {
   return { databaseUrl, db };
 }
 
-async function writeSeedSourceFile(fixtureId: string, startUrl: string) {
+type TestSourceConfig = {
+  adapter: "fake";
+  fixtureId: string;
+  name: string;
+  domain: string;
+  startUrl: string;
+};
+
+async function writeSeedSourceFile(
+  fixtureIdOrConfig: string | TestSourceConfig,
+  startUrl?: string,
+) {
   const privateDir = await mkdtemp(path.join(tmpdir(), "coincodex-private-"));
   const sourceConfigPath = path.join(privateDir, "sources.json");
+  const config =
+    typeof fixtureIdOrConfig === "string"
+      ? {
+          adapter: "fake" as const,
+          fixtureId: fixtureIdOrConfig,
+          name: "Private Source Name",
+          domain: "private.example.test",
+          startUrl: startUrl ?? "",
+        }
+      : fixtureIdOrConfig;
 
   await writeFile(
     sourceConfigPath,
     JSON.stringify([
       {
         id: SEEDED_SOURCE_ID,
-        config: {
-          adapter: "fake",
-          fixtureId,
-          name: "Private Source Name",
-          domain: "private.example.test",
-          startUrl,
-        },
+        config,
       },
     ]),
   );
@@ -88,6 +103,95 @@ afterEach(async () => {
 });
 
 describe("CLI ingestion skeleton", () => {
+  it("extracts rich coin candidates from fixture detail pages and quarantines specimen-like pages", async () => {
+    const { databaseUrl, db } = await createDatabaseUrl();
+    const runId = randomUUID();
+    const sourceConfigPath = await writeSeedSourceFile({
+      adapter: "fake",
+      fixtureId: "fixture-detail-pages",
+      name: "Private Source Name",
+      domain: "private.example.test",
+      startUrl: "https://private.example.test/coins",
+    });
+
+    await executeCli(["seed-sources", "--file", sourceConfigPath], {
+      databaseUrl,
+    });
+
+    await executeCli(
+      [
+        "create-run",
+        "--run-id",
+        runId,
+        "--source-id",
+        SEEDED_SOURCE_ID,
+        "--scope",
+        "issuer_scope",
+      ],
+      { databaseUrl },
+    );
+
+    await runWorkerUntilEmpty(databaseUrl);
+
+    const storedCandidates = await db
+      .select()
+      .from(coinCandidates)
+      .where(eq(coinCandidates.crawlRunId, runId))
+      .orderBy(asc(coinCandidates.createdAt));
+    const storedAcceptedCoins = await db
+      .select()
+      .from(acceptedCoins)
+      .where(eq(acceptedCoins.crawlRunId, runId))
+      .orderBy(asc(acceptedCoins.createdAt));
+    const storedImages = await db
+      .select()
+      .from(acceptedCoinImages)
+      .where(eq(acceptedCoinImages.crawlRunId, runId))
+      .orderBy(asc(acceptedCoinImages.createdAt));
+
+    expect(storedCandidates).toHaveLength(3);
+    expect(storedCandidates).toMatchObject([
+      {
+        pageType: "coin-detail",
+        status: "accepted",
+        originalDetailUrl: "https://private.example.test/coins/ceres-5-francs",
+        normalizedDetailUrl: "https://private.example.test/coins/ceres-5-francs",
+        nameRaw: "5   Francs   Ceres",
+        nameNormalized: "5 Francs Ceres",
+        issuerRaw: "République   française",
+        issuerNormalized: "République française",
+        denominationRaw: "5 Francs",
+        denominationNormalized: "5 Francs",
+        rawDateText: "1870-1871",
+        issuedFromYear: 1870,
+        issuedToYear: 1871,
+        mintMark: "A",
+        quarantineReason: null,
+      },
+      {
+        pageType: "specimen-detail",
+        status: "quarantined",
+        nameNormalized: "5 Francs Specimen PCGS MS64",
+        quarantineReason: "unrecognized_page_type",
+      },
+      {
+        pageType: "reference-detail",
+        status: "quarantined",
+        nameNormalized: "Minting Reference Note",
+        quarantineReason: "unrecognized_page_type",
+      },
+    ]);
+    expect(storedAcceptedCoins).toHaveLength(1);
+    expect(storedAcceptedCoins[0]).toMatchObject({
+      issuer: "République française",
+      denomination: "5 Francs",
+      issuedFromYear: 1870,
+      issuedToYear: 1871,
+      sourceDetailUrl: "https://private.example.test/coins/ceres-5-francs",
+    });
+    expect(storedImages).toHaveLength(1);
+  });
+
   it("runs the source-private MVP workflow through fetch, extract, accept, quarantine, and accepted-only image handling", async () => {
     const { databaseUrl, db } = await createDatabaseUrl();
     const runId = randomUUID();
