@@ -11,6 +11,7 @@ import {
   sources,
 } from "../db/schema.js";
 import {
+  DOWNLOAD_ACCEPTED_COIN_IMAGE_JOB_KIND,
   COIN_CANDIDATE_STATUS,
   JOB_STATUS,
   RAW_PAGE_TYPE,
@@ -35,6 +36,95 @@ function readErrorCode(
   errorPayload: Record<string, unknown> | null,
 ): string | null {
   return typeof errorPayload?.code === "string" ? errorPayload.code : null;
+}
+
+type JobRecord = typeof jobs.$inferSelect;
+type PageRecord = typeof rawSourcePages.$inferSelect;
+
+type StatusSummary = {
+  completed: number;
+  failed: number;
+  queued: number;
+  running: number;
+  retries: number;
+  total: number;
+};
+
+function summarizeJobs(jobs: JobRecord[]): StatusSummary {
+  const summary: StatusSummary = {
+    completed: 0,
+    failed: 0,
+    queued: 0,
+    running: 0,
+    retries: 0,
+    total: jobs.length,
+  };
+
+  for (const job of jobs) {
+    summary.retries += countRetries(job.attempts);
+    switch (job.status) {
+      case JOB_STATUS.completed:
+        summary.completed += 1;
+        break;
+      case JOB_STATUS.failed:
+        summary.failed += 1;
+        break;
+      case JOB_STATUS.queued:
+        summary.queued += 1;
+        break;
+      case JOB_STATUS.running:
+        summary.running += 1;
+        break;
+      default:
+        break;
+    }
+  }
+
+  return summary;
+}
+
+function summarizePagesByType(pages: PageRecord[]) {
+  const summary = {
+    detail: 0,
+    listing: 0,
+    unknown: 0,
+  };
+
+  for (const page of pages) {
+    switch (page.pageType) {
+      case RAW_PAGE_TYPE.detail:
+        summary.detail += 1;
+        break;
+      case RAW_PAGE_TYPE.listing:
+        summary.listing += 1;
+        break;
+      case RAW_PAGE_TYPE.unknown:
+        summary.unknown += 1;
+        break;
+      default:
+        break;
+    }
+  }
+
+  return summary;
+}
+
+function formatJobSummary(prefix: string, summary: StatusSummary): string {
+  return `${prefix} total=${summary.total} completed=${summary.completed} failed=${summary.failed} retries=${summary.retries}`;
+}
+
+function formatErrorSummary(job: JobRecord): string {
+  const code = readErrorCode(job.errorPayload) ?? "unknown";
+  const statusCode =
+    typeof job.errorPayload?.statusCode === "number"
+      ? String(job.errorPayload.statusCode)
+      : "unknown";
+  const retryable =
+    typeof job.errorPayload?.retryable === "boolean"
+      ? String(job.errorPayload.retryable)
+      : "unknown";
+
+  return `error job=${job.id} error_code=${code} status_code=${statusCode} retryable=${retryable}`;
 }
 
 type InspectRunOptions = {
@@ -83,32 +173,27 @@ export class IngestionInspector {
     const quarantinedCandidates = candidates.filter(
       (candidate) => candidate.status === COIN_CANDIDATE_STATUS.quarantined,
     );
-    const completedJobs = runJobs.filter((job) => job.status === JOB_STATUS.completed);
-    const failedJobs = runJobs.filter((job) => job.status === JOB_STATUS.failed);
-    const runningJobs = runJobs.filter((job) => job.status === JOB_STATUS.running);
-    const queuedJobs = runJobs.filter((job) => job.status === JOB_STATUS.queued);
-    const totalRetries = runJobs.reduce((sum, job) => sum + countRetries(job.attempts), 0);
-    const pageTypeCounts = {
-      listing: pages.filter((page) => page.pageType === RAW_PAGE_TYPE.listing).length,
-      detail: pages.filter((page) => page.pageType === RAW_PAGE_TYPE.detail).length,
-      unknown: pages.filter((page) => page.pageType === RAW_PAGE_TYPE.unknown).length,
-    };
-    const imageJobs = runJobs.filter((job) => job.kind === "download_accepted_coin_image");
+    const jobSummary = summarizeJobs(runJobs);
+    const pageTypeCounts = summarizePagesByType(pages);
+    const imageJobs = runJobs.filter(
+      (job) => job.kind === DOWNLOAD_ACCEPTED_COIN_IMAGE_JOB_KIND,
+    );
+    const imageJobSummary = summarizeJobs(imageJobs);
 
     const lines = [
       `run ${run.id}`,
       `source ${run.sourceId}`,
       `status ${run.status}`,
       `jobs ${runJobs.length}`,
-      `jobs total=${runJobs.length} completed=${completedJobs.length} failed=${failedJobs.length} retries=${totalRetries}`,
-      `job_status queued=${queuedJobs.length} running=${runningJobs.length}`,
+      formatJobSummary("jobs", jobSummary),
+      `job_status queued=${jobSummary.queued} running=${jobSummary.running}`,
       `raw_pages ${pages.length}`,
       `raw_pages total=${pages.length} listing=${pageTypeCounts.listing} detail=${pageTypeCounts.detail} unknown=${pageTypeCounts.unknown}`,
       `candidates accepted=${acceptedCandidates.length} quarantined=${quarantinedCandidates.length}`,
       `accepted_coins ${accepted.length}`,
       `accepted_coin_images ${images.length}`,
-      `image_jobs total=${imageJobs.length} completed=${imageJobs.filter((job) => job.status === JOB_STATUS.completed).length} failed=${imageJobs.filter((job) => job.status === JOB_STATUS.failed).length} retries=${imageJobs.reduce((sum, job) => sum + countRetries(job.attempts), 0)} stored=${images.length}`,
-      `failures total=${failedJobs.length}`,
+      `${formatJobSummary("image_jobs", imageJobSummary)} stored=${images.length}`,
+      `failures total=${jobSummary.failed}`,
     ];
     const cursor = readStoredCursor(run.cursor);
     if (cursor) {
@@ -128,10 +213,7 @@ export class IngestionInspector {
       lines.push(`start_url ${sourceConfig.startUrl}`);
     }
     const pagesByJobId = new Map(pages.map((page) => [page.jobId, page]));
-    const jobsByKind = new Map<
-      string,
-      Array<(typeof runJobs)[number]>
-    >();
+    const jobsByKind = new Map<string, JobRecord[]>();
 
     for (const job of runJobs) {
       const jobsForKind = jobsByKind.get(job.kind) ?? [];
@@ -140,9 +222,7 @@ export class IngestionInspector {
     }
 
     for (const [kind, jobsForKind] of jobsByKind) {
-      lines.push(
-        `job_kind ${kind} total=${jobsForKind.length} completed=${jobsForKind.filter((job) => job.status === JOB_STATUS.completed).length} failed=${jobsForKind.filter((job) => job.status === JOB_STATUS.failed).length} retries=${jobsForKind.reduce((sum, job) => sum + countRetries(job.attempts), 0)}`,
-      );
+      lines.push(formatJobSummary(`job_kind ${kind}`, summarizeJobs(jobsForKind)));
     }
 
     for (const job of runJobs) {
@@ -164,18 +244,7 @@ export class IngestionInspector {
         }
       }
       if (job.errorPayload) {
-        const code = readErrorCode(job.errorPayload) ?? "unknown";
-        const statusCode =
-          typeof job.errorPayload.statusCode === "number"
-            ? String(job.errorPayload.statusCode)
-            : "unknown";
-        const retryable =
-          typeof job.errorPayload.retryable === "boolean"
-            ? String(job.errorPayload.retryable)
-            : "unknown";
-        lines.push(
-          `error job=${job.id} error_code=${code} status_code=${statusCode} retryable=${retryable}`,
-        );
+        lines.push(formatErrorSummary(job));
         if (debugPrivate) {
           lines.push(`error_private ${JSON.stringify(job.errorPayload)}`);
         }
