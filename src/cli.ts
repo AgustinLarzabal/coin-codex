@@ -30,6 +30,20 @@ function readRequiredFlag(args: string[], name: string, command: string): string
   return value;
 }
 
+function readIntegerFlag(args: string[], name: string, fallback: number): number {
+  const value = readFlag(args, name);
+  if (value === undefined) {
+    return fallback;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+
+  return parsed;
+}
+
 async function readSeedFile(path: string) {
   const content = await readFile(path, "utf8");
   return parseSeedSourceRecords(JSON.parse(content));
@@ -57,6 +71,7 @@ export async function executeCli(argv: string[], deps: CliDeps = {}): Promise<st
           runId: readFlag(argv, "--run-id") ?? randomUUID(),
           sourceId: readFlag(argv, "--source-id") ?? DEFAULT_SOURCE_ID,
           scope: readFlag(argv, "--scope") ?? DEFAULT_SCOPE,
+          detailLimit: readIntegerFlag(argv, "--detail-limit", 10),
         });
         return JSON.stringify(output, null, 2);
       }

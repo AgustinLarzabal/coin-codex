@@ -4,6 +4,7 @@ export type FetchPageInput = {
 };
 
 export type FetchPageResult = {
+  originalUrl: string;
   normalizedUrl: string;
   content: string;
   providerPayload: Record<string, unknown>;

@@ -4,8 +4,8 @@ import { and, asc, eq, lte, sql } from "drizzle-orm";
 
 import type { Database } from "../db/setup.js";
 import {
-  acceptedCoins,
   acceptedCoinImages,
+  acceptedCoins,
   coinCandidates,
   crawlRuns,
   jobs,
@@ -20,18 +20,21 @@ import {
   EXTRACT_COIN_CANDIDATE_JOB_KIND,
   FETCH_RAW_SOURCE_PAGE_JOB_KIND,
   JOB_STATUS,
+  MAX_DETAIL_PAGE_LIMIT,
   QUARANTINE_REASON,
+  RAW_PAGE_TYPE,
   type AcceptCoinCandidatePayload,
   type DownloadAcceptedCoinImagePayload,
   type ExtractCoinCandidatePayload,
   type FetchRawSourcePagePayload,
 } from "./ingestion.js";
+import { extractCoinCandidate, type ExtractedCoinCandidate } from "./extraction.js";
 import {
-  classifyPage,
-  extractCoinCandidate,
-  extractListingLinks,
-  type ExtractedCoinCandidate,
-} from "./extraction.js";
+  classifyRawPage,
+  extractDetailLinks,
+  normalizeUrl,
+  readStoredCursor,
+} from "./page-processing.js";
 import type { CrawlProvider } from "./providers/crawl-provider.js";
 
 function sha256(input: string): string {
@@ -112,8 +115,8 @@ export class Worker {
     crawlRunId: string,
     kind: string,
     payload: Record<string, unknown>,
+    scheduledAt = new Date(),
   ) {
-    const scheduledAt = new Date();
     await this.db.insert(jobs).values({
       id: randomUUID(),
       crawlRunId,
@@ -128,7 +131,10 @@ export class Worker {
   }
 
   private async syncRunStatus(crawlRunId: string) {
-    const runJobs = await this.db.select().from(jobs).where(eq(jobs.crawlRunId, crawlRunId));
+    const runJobs = await this.db
+      .select({ status: jobs.status })
+      .from(jobs)
+      .where(eq(jobs.crawlRunId, crawlRunId));
 
     await this.db
       .update(crawlRuns)
@@ -144,6 +150,9 @@ export class Worker {
       fixtureId: payload.fixtureId,
       requestUrl: payload.requestUrl,
     });
+    const originalUrl = page.originalUrl || payload.originalUrl || payload.requestUrl;
+    const normalizedUrl = page.normalizedUrl || normalizeUrl(originalUrl);
+    const pageType = classifyRawPage(page.content);
 
     const rawSourcePageId = randomUUID();
     await this.db.insert(rawSourcePages).values({
@@ -151,30 +160,78 @@ export class Worker {
       crawlRunId,
       sourceId: payload.sourceId,
       jobId,
-      normalizedUrl: page.normalizedUrl,
-      urlHash: sha256(page.normalizedUrl),
+      originalUrl,
+      normalizedUrl,
+      urlHash: sha256(normalizedUrl),
+      pageType,
       content: page.content,
       contentHash: sha256(page.content),
       providerPayload: page.providerPayload,
     });
 
-    const pageType = classifyPage(page.content);
-    if (pageType === "listing") {
-      for (const detailUrl of extractListingLinks(page.content).slice(0, 10)) {
-        await this.enqueueJob(crawlRunId, FETCH_RAW_SOURCE_PAGE_JOB_KIND, {
-          sourceId: payload.sourceId,
-          fixtureId: payload.fixtureId,
-          requestUrl: detailUrl,
-        });
-      }
+    if (payload.pageRole === "listing") {
+      await this.enqueueDetailJobs(crawlRunId, payload, originalUrl, normalizedUrl, page.content);
     }
 
-    if (pageType === "coin-detail") {
+    if (pageType === RAW_PAGE_TYPE.detail) {
       await this.enqueueJob(crawlRunId, EXTRACT_COIN_CANDIDATE_JOB_KIND, {
         sourceId: payload.sourceId,
         rawSourcePageId,
       });
     }
+  }
+
+  private async enqueueDetailJobs(
+    crawlRunId: string,
+    payload: FetchRawSourcePagePayload,
+    originalUrl: string,
+    normalizedUrl: string,
+    content: string,
+  ) {
+    const detailLinks = extractDetailLinks(content, originalUrl);
+    const storedCursor = readStoredCursor(payload.cursor) ?? {
+      nextDetailIndex: 0,
+      totalDetailLinks: 0,
+      listingNormalizedUrl: normalizedUrl,
+    };
+    const nextIndex = Math.max(0, storedCursor.nextDetailIndex);
+    const detailLimit = Math.min(payload.detailLimit, MAX_DETAIL_PAGE_LIMIT);
+    const selectedLinks = detailLinks.slice(nextIndex, nextIndex + detailLimit);
+    const now = Date.now();
+
+    for (const [index, link] of selectedLinks.entries()) {
+      const scheduledAt = new Date(now + index);
+      await this.enqueueJob(
+        crawlRunId,
+        FETCH_RAW_SOURCE_PAGE_JOB_KIND,
+        {
+          sourceId: payload.sourceId,
+          fixtureId: payload.fixtureId,
+          requestUrl: link.normalizedUrl,
+          originalUrl: link.originalUrl,
+          pageRole: "detail",
+          detailLimit: payload.detailLimit,
+          cursor: {
+            nextDetailIndex: 0,
+            totalDetailLinks: 0,
+            listingNormalizedUrl: normalizedUrl,
+          },
+        },
+        scheduledAt,
+      );
+    }
+
+    await this.db
+      .update(crawlRuns)
+      .set({
+        cursor: {
+          nextDetailIndex: nextIndex + selectedLinks.length,
+          totalDetailLinks: detailLinks.length,
+          listingNormalizedUrl: normalizedUrl,
+        },
+        updatedAt: new Date(),
+      })
+      .where(eq(crawlRuns.id, crawlRunId));
   }
 
   private async handleExtract(crawlRunId: string, payload: ExtractCoinCandidatePayload) {

@@ -13,6 +13,8 @@ export const crawlRuns = pgTable("crawl_runs", {
     .references(() => sources.id),
   scope: text("scope").notNull(),
   status: text("status").notNull(),
+  detailLimit: integer("detail_limit").notNull().default(10),
+  cursor: jsonb("cursor").$type<Record<string, unknown> | null>(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
@@ -47,8 +49,10 @@ export const rawSourcePages = pgTable("raw_source_pages", {
   jobId: text("job_id")
     .notNull()
     .references(() => jobs.id),
+  originalUrl: text("original_url").notNull(),
   normalizedUrl: text("normalized_url").notNull(),
   urlHash: text("url_hash").notNull(),
+  pageType: text("page_type").notNull(),
   content: text("content").notNull(),
   contentHash: text("content_hash").notNull(),
   providerPayload: jsonb("provider_payload").$type<Record<string, unknown>>().notNull(),

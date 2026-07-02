@@ -11,6 +11,7 @@ import {
   sources,
 } from "../db/schema.js";
 import { COIN_CANDIDATE_STATUS } from "./ingestion.js";
+import { readStoredCursor } from "./page-processing.js";
 import { parseSourceConfig } from "./source-config.js";
 
 function redactHash(value: string): string {
@@ -79,6 +80,12 @@ export class IngestionInspector {
       `accepted_coins ${accepted.length}`,
       `accepted_coin_images ${images.length}`,
     ];
+    const cursor = readStoredCursor(run.cursor);
+    if (cursor) {
+      lines.push(
+        `cursor next_detail_index=${cursor.nextDetailIndex} total_detail_links=${cursor.totalDetailLinks}`,
+      );
+    }
     const debugPrivate = options.debugPrivate === true;
     const sourceConfig = source ? parseSourceConfig(source.config) : null;
     if (debugPrivate && sourceConfig) {
@@ -99,10 +106,11 @@ export class IngestionInspector {
       const page = pagesByJobId.get(job.id);
       if (page) {
         lines.push(
-          `page ${page.id} url_hash=${redactHash(page.urlHash)} content_hash=${redactHash(page.contentHash)}`,
+          `page ${page.id} page_type=${page.pageType} url_hash=${redactHash(page.urlHash)} content_hash=${redactHash(page.contentHash)}`,
         );
         if (debugPrivate) {
           lines.push(`url ${page.normalizedUrl}`);
+          lines.push(`original_url ${page.originalUrl}`);
           const title = readPageTitle(page.content);
           if (title) {
             lines.push(`title ${title}`);
