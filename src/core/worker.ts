@@ -13,22 +13,93 @@ import {
 } from "../db/schema.js";
 import {
   ACCEPT_COIN_CANDIDATE_JOB_KIND,
+  COIN_CANDIDATE_STATUS,
   CRAWL_RUN_STATUS,
   DEFAULT_JOB_MAX_ATTEMPTS,
   DOWNLOAD_ACCEPTED_COIN_IMAGE_JOB_KIND,
   EXTRACT_COIN_CANDIDATE_JOB_KIND,
+  FETCH_RAW_SOURCE_PAGE_JOB_KIND,
+  JOB_STATUS,
+  QUARANTINE_REASON,
   type AcceptCoinCandidatePayload,
   type DownloadAcceptedCoinImagePayload,
   type ExtractCoinCandidatePayload,
   type FetchRawSourcePagePayload,
-  FETCH_RAW_SOURCE_PAGE_JOB_KIND,
-  JOB_STATUS,
 } from "./ingestion.js";
-import { classifyPage, extractCoinCandidate, extractListingLinks } from "./extraction.js";
+import {
+  classifyPage,
+  extractCoinCandidate,
+  extractListingLinks,
+  type ExtractedCoinCandidate,
+} from "./extraction.js";
 import type { CrawlProvider } from "./providers/crawl-provider.js";
 
 function sha256(input: string): string {
   return createHash("sha256").update(input).digest("hex");
+}
+
+function getRunStatus(jobStatuses: string[]): string {
+  if (jobStatuses.includes(JOB_STATUS.failed)) {
+    return CRAWL_RUN_STATUS.failed;
+  }
+
+  if (jobStatuses.includes(JOB_STATUS.queued) || jobStatuses.includes(JOB_STATUS.running)) {
+    return CRAWL_RUN_STATUS.queued;
+  }
+
+  return CRAWL_RUN_STATUS.completed;
+}
+
+function buildCandidateFingerprint(candidate: ExtractedCoinCandidate): string | null {
+  const { issuer, denomination, issuedFromYear, issuedToYear } = candidate;
+  if (!issuer || !denomination || issuedFromYear === null || issuedToYear === null) {
+    return null;
+  }
+
+  return sha256(
+    [issuer.toLowerCase(), denomination.toLowerCase(), issuedFromYear, issuedToYear].join("|"),
+  );
+}
+
+function getQuarantineReason(candidate: typeof coinCandidates.$inferSelect): string | null {
+  if (candidate.pageType !== "coin-detail") {
+    return QUARANTINE_REASON.unrecognizedPageType;
+  }
+
+  if (
+    candidate.issuedFromYear !== null &&
+    candidate.issuedToYear !== null &&
+    candidate.issuedFromYear > candidate.issuedToYear
+  ) {
+    return QUARANTINE_REASON.invalidYearRange;
+  }
+
+  if (
+    !candidate.issuer ||
+    !candidate.denomination ||
+    candidate.issuedFromYear === null ||
+    candidate.issuedToYear === null
+  ) {
+    return QUARANTINE_REASON.missingIdentityFields;
+  }
+
+  return null;
+}
+
+function assertAcceptedCandidate(
+  candidate: typeof coinCandidates.$inferSelect,
+): asserts candidate is typeof coinCandidates.$inferSelect & {
+  issuedFromYear: number;
+  issuedToYear: number;
+  fingerprint: string;
+} {
+  if (
+    candidate.issuedFromYear === null ||
+    candidate.issuedToYear === null ||
+    candidate.fingerprint === null
+  ) {
+    throw new Error(`accepted candidate missing required fields: ${candidate.id}`);
+  }
 }
 
 export class Worker {
@@ -58,19 +129,11 @@ export class Worker {
 
   private async syncRunStatus(crawlRunId: string) {
     const runJobs = await this.db.select().from(jobs).where(eq(jobs.crawlRunId, crawlRunId));
-    const hasFailed = runJobs.some((job) => job.status === JOB_STATUS.failed);
-    const hasPending = runJobs.some(
-      (job) => job.status === JOB_STATUS.queued || job.status === JOB_STATUS.running,
-    );
 
     await this.db
       .update(crawlRuns)
       .set({
-        status: hasFailed
-          ? CRAWL_RUN_STATUS.failed
-          : hasPending
-            ? CRAWL_RUN_STATUS.queued
-            : CRAWL_RUN_STATUS.completed,
+        status: getRunStatus(runJobs.map((job) => job.status)),
         updatedAt: new Date(),
       })
       .where(eq(crawlRuns.id, crawlRunId));
@@ -124,18 +187,6 @@ export class Worker {
     }
 
     const extracted = extractCoinCandidate(page.content);
-    const fingerprint =
-      extracted.issuer && extracted.denomination && extracted.issuedFromYear && extracted.issuedToYear
-        ? sha256(
-            [
-              extracted.issuer.toLowerCase(),
-              extracted.denomination.toLowerCase(),
-              extracted.issuedFromYear,
-              extracted.issuedToYear,
-            ].join("|"),
-          )
-        : null;
-
     const candidateId = randomUUID();
     await this.db.insert(coinCandidates).values({
       id: candidateId,
@@ -152,8 +203,8 @@ export class Worker {
       issuedFromYear: extracted.issuedFromYear,
       issuedToYear: extracted.issuedToYear,
       imageUrl: extracted.imageUrl ?? null,
-      fingerprint,
-      status: "pending",
+      fingerprint: buildCandidateFingerprint(extracted),
+      status: COIN_CANDIDATE_STATUS.pending,
       quarantineReason: null,
     });
 
@@ -172,29 +223,14 @@ export class Worker {
       throw new Error(`coin candidate not found: ${payload.candidateId}`);
     }
 
-    let quarantineReason: string | null = null;
-    if (candidate.pageType !== "coin-detail") {
-      quarantineReason = "unrecognized_page_type";
-    } else if (
-      candidate.issuedFromYear !== null &&
-      candidate.issuedToYear !== null &&
-      candidate.issuedFromYear > candidate.issuedToYear
-    ) {
-      quarantineReason = "invalid_year_range";
-    } else if (
-      !candidate.issuer ||
-      !candidate.denomination ||
-      candidate.issuedFromYear === null ||
-      candidate.issuedToYear === null
-    ) {
-      quarantineReason = "missing_identity_fields";
-    } else {
+    let quarantineReason = getQuarantineReason(candidate);
+    if (!quarantineReason) {
       const [existingAcceptedCoin] = await this.db
         .select()
         .from(acceptedCoins)
         .where(eq(acceptedCoins.sourceDetailUrlHash, candidate.detailUrlHash));
       if (existingAcceptedCoin) {
-        quarantineReason = "duplicate_source_detail_url";
+        quarantineReason = QUARANTINE_REASON.duplicateSourceDetailUrl;
       }
     }
 
@@ -202,12 +238,14 @@ export class Worker {
       await this.db
         .update(coinCandidates)
         .set({
-          status: "quarantined",
+          status: COIN_CANDIDATE_STATUS.quarantined,
           quarantineReason,
         })
         .where(eq(coinCandidates.id, candidate.id));
       return;
     }
+
+    assertAcceptedCandidate(candidate);
 
     const acceptedCoinId = randomUUID();
     await this.db.insert(acceptedCoins).values({
@@ -219,15 +257,15 @@ export class Worker {
       sourceDetailUrlHash: candidate.detailUrlHash,
       issuer: candidate.issuer,
       denomination: candidate.denomination,
-      issuedFromYear: candidate.issuedFromYear!,
-      issuedToYear: candidate.issuedToYear!,
-      fingerprint: candidate.fingerprint!,
+      issuedFromYear: candidate.issuedFromYear,
+      issuedToYear: candidate.issuedToYear,
+      fingerprint: candidate.fingerprint,
     });
 
     await this.db
       .update(coinCandidates)
       .set({
-        status: "accepted",
+        status: COIN_CANDIDATE_STATUS.accepted,
         quarantineReason: null,
       })
       .where(eq(coinCandidates.id, candidate.id));

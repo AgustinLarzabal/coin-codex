@@ -10,6 +10,7 @@ import {
   rawSourcePages,
   sources,
 } from "../db/schema.js";
+import { COIN_CANDIDATE_STATUS } from "./ingestion.js";
 import { parseSourceConfig } from "./source-config.js";
 
 function redactHash(value: string): string {
@@ -61,9 +62,11 @@ export class IngestionInspector {
       .from(acceptedCoinImages)
       .where(eq(acceptedCoinImages.crawlRunId, runId))
       .orderBy(asc(acceptedCoinImages.createdAt));
-    const acceptedCandidates = candidates.filter((candidate) => candidate.status === "accepted");
+    const acceptedCandidates = candidates.filter(
+      (candidate) => candidate.status === COIN_CANDIDATE_STATUS.accepted,
+    );
     const quarantinedCandidates = candidates.filter(
-      (candidate) => candidate.status === "quarantined",
+      (candidate) => candidate.status === COIN_CANDIDATE_STATUS.quarantined,
     );
 
     const lines = [
@@ -95,7 +98,9 @@ export class IngestionInspector {
       );
       const page = pagesByJobId.get(job.id);
       if (page) {
-        lines.push(`page ${page.id} url_hash=${redactHash(page.urlHash)} content_hash=${redactHash(page.contentHash)}`);
+        lines.push(
+          `page ${page.id} url_hash=${redactHash(page.urlHash)} content_hash=${redactHash(page.contentHash)}`,
+        );
         if (debugPrivate) {
           lines.push(`url ${page.normalizedUrl}`);
           const title = readPageTitle(page.content);
@@ -110,7 +115,9 @@ export class IngestionInspector {
     }
 
     for (const candidate of quarantinedCandidates) {
-      lines.push(`candidate ${candidate.id} status=quarantined reason=${candidate.quarantineReason}`);
+      lines.push(
+        `candidate ${candidate.id} status=quarantined reason=${candidate.quarantineReason}`,
+      );
     }
 
     return lines.join("\n");

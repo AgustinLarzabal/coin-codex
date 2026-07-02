@@ -1,3 +1,19 @@
+export type IssuedYearRange = {
+  issuedFromYear: number | null;
+  issuedToYear: number | null;
+};
+
+export type ExtractedCoinCandidate = {
+  pageType: string;
+  title: string;
+  issuer: string;
+  denomination: string;
+  rawDateText: string;
+  issuedFromYear: number | null;
+  issuedToYear: number | null;
+  imageUrl: string | undefined;
+};
+
 function readAttr(content: string, attribute: string): string | undefined {
   const match = content.match(new RegExp(`${attribute}="([^"]+)"`, "i"));
   return match?.[1];
@@ -24,7 +40,7 @@ export function extractListingLinks(content: string): string[] {
   );
 }
 
-function parseYearRange(rawDateText: string) {
+function parseYearRange(rawDateText: string): IssuedYearRange {
   const match = rawDateText.match(/^(\d{4})(?:-(\d{4}))?$/);
   if (!match) {
     return { issuedFromYear: null, issuedToYear: null };
@@ -35,7 +51,7 @@ function parseYearRange(rawDateText: string) {
   return { issuedFromYear, issuedToYear };
 }
 
-export function extractCoinCandidate(content: string) {
+export function extractCoinCandidate(content: string): ExtractedCoinCandidate {
   const rawDateText = readField(content, "Year");
   const { issuedFromYear, issuedToYear } = parseYearRange(rawDateText);
 
