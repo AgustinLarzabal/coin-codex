@@ -692,6 +692,10 @@ describe("CLI ingestion skeleton", () => {
     const downloadJob = storedJobs.find(
       (job) => job.kind === DOWNLOAD_ACCEPTED_COIN_IMAGE_JOB_KIND,
     );
+    const inspectOutput = await executeCli(
+      ["inspect-run", "--run-id", runId],
+      { databaseUrl, imageProviderFactory },
+    );
 
     expect(storedAcceptedCoins).toHaveLength(1);
     expect(storedImages).toHaveLength(0);
@@ -704,6 +708,14 @@ describe("CLI ingestion skeleton", () => {
         statusCode: 504,
       },
     });
+    expect(inspectOutput).toContain("jobs total=8 completed=7 failed=1 retries=2");
+    expect(inspectOutput).toContain(
+      "job_kind download_accepted_coin_image total=1 completed=0 failed=1 retries=2",
+    );
+    expect(inspectOutput).toContain("failures total=1");
+    expect(inspectOutput).toContain("error_code=IMAGE_TIMEOUT");
+    expect(inspectOutput).not.toContain("failed to download");
+    expect(inspectOutput).not.toContain("https://private.example.test/images/accepted-coin.jpg");
   });
 
   it("quarantines strong fingerprint matches from a different source instead of deduping by shared url alone", async () => {
