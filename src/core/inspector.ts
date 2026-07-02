@@ -1,4 +1,4 @@
-import { and, asc, eq } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 
 import type { Database } from "../db/setup.js";
 import { crawlRuns, jobs, rawSourcePages } from "../db/schema.js";
@@ -35,12 +35,13 @@ export class IngestionInspector {
       `jobs ${runJobs.length}`,
       `raw_pages ${pages.length}`,
     ];
+    const pagesByJobId = new Map(pages.map((page) => [page.jobId, page]));
 
     for (const job of runJobs) {
       lines.push(
         `job ${job.id} ${job.kind} status=${job.status} attempts=${job.attempts} lock=${job.lockToken ?? "none"}`,
       );
-      const page = pages.find((candidate) => candidate.jobId === job.id);
+      const page = pagesByJobId.get(job.id);
       if (page) {
         lines.push(`page ${page.id} url_hash=${redactHash(page.urlHash)} content_hash=${redactHash(page.contentHash)}`);
       }

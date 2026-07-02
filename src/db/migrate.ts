@@ -12,12 +12,12 @@ const migrationsDir = path.resolve(
 );
 
 export async function migrate(executor: SqlExecutor) {
-  const files = (await readdir(migrationsDir))
+  const migrationFiles = (await readdir(migrationsDir))
     .filter((entry) => entry.endsWith(".sql"))
     .sort();
 
-  for (const file of files) {
-    const sql = await readFile(path.join(migrationsDir, file), "utf8");
-    await executor.exec(sql);
+  for (const file of migrationFiles) {
+    const migrationSql = await readFile(path.join(migrationsDir, file), "utf8");
+    await executor.exec(migrationSql);
   }
 }

@@ -2,9 +2,14 @@ import { createHash, randomUUID } from "node:crypto";
 
 import { and, asc, eq, lte, sql } from "drizzle-orm";
 
-import type { CrawlProvider } from "./providers/crawl-provider.js";
 import type { Database } from "../db/setup.js";
 import { crawlRuns, jobs, rawSourcePages } from "../db/schema.js";
+import {
+  CRAWL_RUN_STATUS,
+  type FetchRawSourcePagePayload,
+  JOB_STATUS,
+} from "./ingestion.js";
+import type { CrawlProvider } from "./providers/crawl-provider.js";
 
 function sha256(input: string): string {
   return createHash("sha256").update(input).digest("hex");
@@ -17,10 +22,11 @@ export class Worker {
   ) {}
 
   async runOnce() {
+    const now = new Date();
     const [job] = await this.db
       .select()
       .from(jobs)
-      .where(and(eq(jobs.status, "queued"), lte(jobs.availableAt, new Date())))
+      .where(and(eq(jobs.status, JOB_STATUS.queued), lte(jobs.availableAt, now)))
       .orderBy(asc(jobs.scheduledAt))
       .limit(1);
 
@@ -32,16 +38,16 @@ export class Worker {
     await this.db
       .update(jobs)
       .set({
-        status: "running",
+        status: JOB_STATUS.running,
         attempts: sql`${jobs.attempts} + 1`,
-        lockedAt: new Date(),
+        lockedAt: now,
         lockToken,
-        updatedAt: new Date(),
+        updatedAt: now,
       })
       .where(eq(jobs.id, job.id));
 
     try {
-      const payload = job.payload as Record<string, string>;
+      const payload = job.payload as FetchRawSourcePagePayload;
       const page = await this.crawlProvider.fetchPage({
         fixtureId: payload.fixtureId,
         requestUrl: payload.requestUrl,
@@ -62,7 +68,7 @@ export class Worker {
       await this.db
         .update(jobs)
         .set({
-          status: "completed",
+          status: JOB_STATUS.completed,
           lockedAt: null,
           lockToken: null,
           errorPayload: null,
@@ -73,7 +79,7 @@ export class Worker {
       await this.db
         .update(crawlRuns)
         .set({
-          status: "completed",
+          status: CRAWL_RUN_STATUS.completed,
           updatedAt: new Date(),
         })
         .where(eq(crawlRuns.id, job.crawlRunId));
@@ -85,7 +91,7 @@ export class Worker {
       await this.db
         .update(jobs)
         .set({
-          status: shouldRetry ? "queued" : "failed",
+          status: shouldRetry ? JOB_STATUS.queued : JOB_STATUS.failed,
           availableAt: new Date(Date.now() + nextAttempt * 1_000),
           lockedAt: null,
           lockToken: null,
@@ -99,7 +105,7 @@ export class Worker {
       await this.db
         .update(crawlRuns)
         .set({
-          status: shouldRetry ? "queued" : "failed",
+          status: shouldRetry ? CRAWL_RUN_STATUS.queued : CRAWL_RUN_STATUS.failed,
           updatedAt: new Date(),
         })
         .where(eq(crawlRuns.id, job.crawlRunId));

@@ -3,6 +3,10 @@ import process from "node:process";
 
 import { createAppContext } from "./core/context.js";
 
+const DEFAULT_SOURCE_ID = "src_fixture";
+const DEFAULT_SCOPE = "default";
+const DEFAULT_FIXTURE_ID = "fixture-coin";
+
 type CliDeps = {
   databaseUrl?: string;
 };
@@ -16,6 +20,15 @@ function readFlag(args: string[], name: string): string | undefined {
   return args[index + 1];
 }
 
+function readRequiredFlag(args: string[], name: string, command: string): string {
+  const value = readFlag(args, name);
+  if (!value) {
+    throw new Error(`${command} requires ${name}`);
+  }
+
+  return value;
+}
+
 export async function executeCli(argv: string[], deps: CliDeps = {}): Promise<string> {
   const [command] = argv;
   if (!command) {
@@ -27,34 +40,27 @@ export async function executeCli(argv: string[], deps: CliDeps = {}): Promise<st
   });
 
   try {
-    if (command === "create-run") {
-      const sourceId = readFlag(argv, "--source-id") ?? "src_fixture";
-      const scope = readFlag(argv, "--scope") ?? "default";
-      const fixtureId = readFlag(argv, "--fixture") ?? "fixture-coin";
-      const runId = readFlag(argv, "--run-id") ?? randomUUID();
-      const output = await context.ingestionService.createRun({
-        runId,
-        sourceId,
-        scope,
-        fixtureId,
-      });
-      return JSON.stringify(output, null, 2);
-    }
-
-    if (command === "run-worker") {
-      const output = await context.worker.runOnce();
-      return JSON.stringify(output, null, 2);
-    }
-
-    if (command === "inspect-run") {
-      const runId = readFlag(argv, "--run-id");
-      if (!runId) {
-        throw new Error("inspect-run requires --run-id");
+    switch (command) {
+      case "create-run": {
+        const output = await context.ingestionService.createRun({
+          runId: readFlag(argv, "--run-id") ?? randomUUID(),
+          sourceId: readFlag(argv, "--source-id") ?? DEFAULT_SOURCE_ID,
+          scope: readFlag(argv, "--scope") ?? DEFAULT_SCOPE,
+          fixtureId: readFlag(argv, "--fixture") ?? DEFAULT_FIXTURE_ID,
+        });
+        return JSON.stringify(output, null, 2);
       }
-      return context.inspector.inspectRun(runId);
+      case "run-worker": {
+        const output = await context.worker.runOnce();
+        return JSON.stringify(output, null, 2);
+      }
+      case "inspect-run":
+        return context.inspector.inspectRun(
+          readRequiredFlag(argv, "--run-id", command),
+        );
+      default:
+        throw new Error(`unknown command: ${command}`);
     }
-
-    throw new Error(`unknown command: ${command}`);
   } finally {
     await context.close();
   }

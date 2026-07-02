@@ -5,6 +5,10 @@ import { eq } from "drizzle-orm";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { executeCli } from "../src/cli.js";
+import {
+  FETCH_RAW_SOURCE_PAGE_JOB_KIND,
+  JOB_STATUS,
+} from "../src/core/ingestion.js";
 import { migrate } from "../src/db/migrate.js";
 import { createDatabase, registerDatabase, unregisterDatabase } from "../src/db/setup.js";
 import { jobs, rawSourcePages } from "../src/db/schema.js";
@@ -75,8 +79,8 @@ describe("CLI ingestion skeleton", () => {
 
     expect(storedJobs).toHaveLength(1);
     expect(storedJobs[0]).toMatchObject({
-      kind: "fetch_raw_source_page",
-      status: "completed",
+      kind: FETCH_RAW_SOURCE_PAGE_JOB_KIND,
+      status: JOB_STATUS.completed,
       attempts: 1,
     });
     expect(storedJobs[0].lockedAt).toBeNull();
