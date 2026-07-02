@@ -1,0 +1,9 @@
+.env
+.env.*
+!.env.example
+
+.private/
+
+node_modules/
+dist/
+coverage/
