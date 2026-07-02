@@ -9,12 +9,15 @@ import {
   clampDetailLimit,
   createCrawlCursor,
   type CrawlCursor,
-  DEFAULT_JOB_MAX_ATTEMPTS,
   FETCH_RAW_SOURCE_PAGE_JOB_KIND,
   JOB_STATUS,
 } from "./ingestion.js";
 import { readStoredCursor } from "./page-processing.js";
-import { parseSourceConfig, type SeedSourceRecord } from "./source-config.js";
+import {
+  parseSourceConfig,
+  readSourceAttemptLimit,
+  type SeedSourceRecord,
+} from "./source-config.js";
 
 type CreateRunInput = {
   runId: string;
@@ -72,12 +75,11 @@ export class IngestionService {
       kind: FETCH_RAW_SOURCE_PAGE_JOB_KIND,
       status: JOB_STATUS.queued,
       attempts: 0,
-      maxAttempts: DEFAULT_JOB_MAX_ATTEMPTS,
+      maxAttempts: readSourceAttemptLimit(sourceConfig),
       scheduledAt,
       availableAt: scheduledAt,
       payload: {
         sourceId: input.sourceId,
-        fixtureId: sourceConfig.fixtureId,
         requestUrl: sourceConfig.startUrl,
         originalUrl: sourceConfig.startUrl,
         pageRole: "listing",

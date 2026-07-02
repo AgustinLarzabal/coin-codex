@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import process from "node:process";
 
 import { createAppContext } from "./core/context.js";
+import type { FirecrawlClient } from "./core/providers/firecrawl-provider.js";
 import { parseSeedSourceRecords } from "./core/source-config.js";
 
 const DEFAULT_SOURCE_ID = "src_fixture";
@@ -10,6 +11,7 @@ const DEFAULT_SCOPE = "default";
 
 type CliDeps = {
   databaseUrl?: string;
+  firecrawlClientFactory?: () => FirecrawlClient;
 };
 
 function readFlag(args: string[], name: string): string | undefined {
@@ -57,6 +59,7 @@ export async function executeCli(argv: string[], deps: CliDeps = {}): Promise<st
 
   const context = await createAppContext({
     databaseUrl: deps.databaseUrl ?? process.env.DATABASE_URL,
+    firecrawlClientFactory: deps.firecrawlClientFactory,
   });
 
   try {

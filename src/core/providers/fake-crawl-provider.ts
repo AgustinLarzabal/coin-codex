@@ -210,9 +210,13 @@ const FIXTURES: Record<string, Record<string, string>> = {
 
 export class FakeCrawlProvider implements CrawlProvider {
   async fetchPage(input: FetchPageInput): Promise<FetchPageResult> {
-    const fixturePages = FIXTURES[input.fixtureId];
+    if (input.sourceConfig.adapter !== "fake") {
+      throw new Error(`unsupported fake provider adapter: ${input.sourceConfig.adapter}`);
+    }
+
+    const fixturePages = FIXTURES[input.sourceConfig.fixtureId];
     if (!fixturePages) {
-      throw new Error(`unknown fixture: ${input.fixtureId}`);
+      throw new Error(`unknown fixture: ${input.sourceConfig.fixtureId}`);
     }
 
     const normalizedUrl = normalizeUrl(input.requestUrl);
@@ -225,8 +229,10 @@ export class FakeCrawlProvider implements CrawlProvider {
       originalUrl: input.requestUrl,
       normalizedUrl,
       content,
+      extractedLinks: [],
       providerPayload: {
-        fixtureId: input.fixtureId,
+        adapter: "fake",
+        fixtureId: input.sourceConfig.fixtureId,
         mode: "fake",
       },
     };

@@ -59,7 +59,6 @@ export const QUARANTINE_REASON = {
 
 export type FetchRawSourcePagePayload = {
   sourceId: string;
-  fixtureId: string;
   requestUrl: string;
   originalUrl: string;
   pageRole: "listing" | "detail";

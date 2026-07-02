@@ -10,6 +10,7 @@ import {
   crawlRuns,
   jobs,
   rawSourcePages,
+  sources,
 } from "../db/schema.js";
 import {
   ACCEPT_COIN_CANDIDATE_JOB_KIND,
@@ -23,7 +24,6 @@ import {
   FETCH_RAW_SOURCE_PAGE_JOB_KIND,
   JOB_STATUS,
   QUARANTINE_REASON,
-  RAW_PAGE_TYPE,
   type AcceptCoinCandidatePayload,
   type DownloadAcceptedCoinImagePayload,
   type ExtractCoinCandidatePayload,
@@ -37,17 +37,20 @@ import {
   normalizeUrl,
   readStoredCursor,
 } from "./page-processing.js";
-import type { CrawlProvider } from "./providers/crawl-provider.js";
+import { CrawlProviderError, type CrawlProvider } from "./providers/crawl-provider.js";
+import {
+  parseSourceConfig,
+  readSourceAttemptLimit,
+  readSourceFetchDelayMs,
+  readSourceRetryBackoffMs,
+  type SourceConfig,
+} from "./source-config.js";
 
 function sha256(input: string): string {
   return createHash("sha256").update(input).digest("hex");
 }
 
 function getRunStatus(jobStatuses: string[]): string {
-  if (jobStatuses.includes(JOB_STATUS.failed)) {
-    return CRAWL_RUN_STATUS.failed;
-  }
-
   if (jobStatuses.includes(JOB_STATUS.queued) || jobStatuses.includes(JOB_STATUS.running)) {
     return CRAWL_RUN_STATUS.queued;
   }
@@ -56,12 +59,7 @@ function getRunStatus(jobStatuses: string[]): string {
 }
 
 function buildCandidateFingerprint(candidate: ExtractedCoinCandidate): string | null {
-  const {
-    issuerNormalized,
-    denominationNormalized,
-    issuedFromYear,
-    issuedToYear,
-  } = candidate;
+  const { issuerNormalized, denominationNormalized, issuedFromYear, issuedToYear } = candidate;
   if (
     !issuerNormalized ||
     !denominationNormalized ||
@@ -163,8 +161,9 @@ export class Worker {
   }
 
   private async handleFetch(jobId: string, crawlRunId: string, payload: FetchRawSourcePagePayload) {
+    const sourceConfig = await this.readSourceConfig(payload.sourceId);
     const page = await this.crawlProvider.fetchPage({
-      fixtureId: payload.fixtureId,
+      sourceConfig,
       requestUrl: payload.requestUrl,
     });
     const originalUrl = page.originalUrl || payload.originalUrl || payload.requestUrl;
@@ -187,7 +186,15 @@ export class Worker {
     });
 
     if (payload.pageRole === "listing") {
-      await this.enqueueDetailJobs(crawlRunId, payload, originalUrl, normalizedUrl, page.content);
+      await this.enqueueDetailJobs(
+        crawlRunId,
+        payload,
+        sourceConfig,
+        originalUrl,
+        normalizedUrl,
+        page.content,
+        page.extractedLinks,
+      );
     }
 
     if (payload.pageRole === "detail") {
@@ -198,25 +205,48 @@ export class Worker {
     }
   }
 
+  private async readSourceConfig(sourceId: string): Promise<SourceConfig> {
+    const [source] = await this.db.select().from(sources).where(eq(sources.id, sourceId));
+    if (!source) {
+      throw new Error(`source not found: ${sourceId}`);
+    }
+
+    return parseSourceConfig(source.config);
+  }
+
   private async enqueueDetailJobs(
     crawlRunId: string,
     payload: FetchRawSourcePagePayload,
+    sourceConfig: SourceConfig,
     originalUrl: string,
     normalizedUrl: string,
     content: string,
+    extractedLinks: string[],
   ) {
-    const detailLinks = extractDetailLinks(content, originalUrl);
+    const detailLinks =
+      extractedLinks.length > 0
+        ? extractStoredDetailLinks(extractedLinks, originalUrl)
+        : extractDetailLinks(content, originalUrl);
     const storedCursor = readStoredCursor(payload.cursor) ?? createCrawlCursor(normalizedUrl);
     const nextIndex = Math.max(0, storedCursor.nextDetailIndex);
     const detailLimit = clampDetailLimit(payload.detailLimit);
     const selectedLinks = detailLinks.slice(nextIndex, nextIndex + detailLimit);
     const now = Date.now();
+    const fetchDelayMs = readSourceFetchDelayMs(sourceConfig);
+    const scheduleStepMs = Math.max(fetchDelayMs, 1);
 
     if (selectedLinks.length > 0) {
       await this.db.insert(jobs).values(
         selectedLinks.map((link, index) => {
-          const scheduledAt = new Date(now + index);
-          return this.buildDetailJob(crawlRunId, payload, normalizedUrl, link, scheduledAt);
+          const scheduledAt = new Date(now + index * scheduleStepMs);
+          return this.buildDetailJob(
+            crawlRunId,
+            payload,
+            sourceConfig,
+            normalizedUrl,
+            link,
+            scheduledAt,
+          );
         }),
       );
     }
@@ -237,6 +267,7 @@ export class Worker {
   private buildDetailJob(
     crawlRunId: string,
     payload: FetchRawSourcePagePayload,
+    sourceConfig: SourceConfig,
     listingNormalizedUrl: string,
     link: DetailLink,
     scheduledAt: Date,
@@ -247,15 +278,14 @@ export class Worker {
       kind: FETCH_RAW_SOURCE_PAGE_JOB_KIND,
       status: JOB_STATUS.queued,
       attempts: 0,
-      maxAttempts: DEFAULT_JOB_MAX_ATTEMPTS,
+      maxAttempts: readSourceAttemptLimit(sourceConfig),
       scheduledAt,
       availableAt: scheduledAt,
       payload: {
         sourceId: payload.sourceId,
-        fixtureId: payload.fixtureId,
         requestUrl: link.normalizedUrl,
         originalUrl: link.originalUrl,
-        pageRole: "detail",
+        pageRole: "detail" as const,
         detailLimit: payload.detailLimit,
         cursor: createCrawlCursor(listingNormalizedUrl),
       },
@@ -464,17 +494,27 @@ export class Worker {
       return { processed: 1, jobId: job.id, runId: job.crawlRunId, kind: job.kind };
     } catch (error) {
       const nextAttempt = job.attempts + 1;
-      const shouldRetry = nextAttempt < job.maxAttempts;
+      const sourceId = readJobSourceId(job.payload);
+      const sourceConfig = sourceId ? await this.readSourceConfig(sourceId) : null;
+      const retryableError = error instanceof CrawlProviderError ? error : null;
+      const shouldRetry =
+        job.kind === FETCH_RAW_SOURCE_PAGE_JOB_KIND
+          ? nextAttempt < job.maxAttempts && retryableError?.details.retryable === true
+          : nextAttempt < job.maxAttempts;
+
       await this.db
         .update(jobs)
         .set({
           status: shouldRetry ? JOB_STATUS.queued : JOB_STATUS.failed,
-          availableAt: new Date(Date.now() + nextAttempt * 1_000),
+          availableAt: new Date(
+            Date.now() +
+              (job.kind === FETCH_RAW_SOURCE_PAGE_JOB_KIND && sourceConfig
+                ? readSourceRetryBackoffMs(sourceConfig, nextAttempt)
+                : nextAttempt * 1_000),
+          ),
           lockedAt: null,
           lockToken: null,
-          errorPayload: {
-            message: error instanceof Error ? error.message : String(error),
-          },
+          errorPayload: buildJobErrorPayload(error),
           updatedAt: new Date(),
         })
         .where(eq(jobs.id, job.id));
@@ -490,4 +530,43 @@ export class Worker {
       };
     }
   }
+}
+
+function extractStoredDetailLinks(urls: string[], baseUrl: string): DetailLink[] {
+  const seenNormalizedUrls = new Set<string>();
+  const detailLinks: DetailLink[] = [];
+
+  for (const url of urls) {
+    const originalUrl = new URL(url, baseUrl).toString();
+    const normalizedUrl = normalizeUrl(originalUrl);
+    if (seenNormalizedUrls.has(normalizedUrl)) {
+      continue;
+    }
+
+    seenNormalizedUrls.add(normalizedUrl);
+    detailLinks.push({ originalUrl, normalizedUrl });
+  }
+
+  return detailLinks;
+}
+
+function buildJobErrorPayload(error: unknown): Record<string, unknown> {
+  if (error instanceof CrawlProviderError) {
+    return {
+      message: error.message,
+      code: error.details.code,
+      retryable: error.details.retryable,
+      statusCode: error.details.statusCode ?? null,
+      requestId: error.details.requestId ?? null,
+      providerPayload: error.details.providerPayload ?? null,
+    };
+  }
+
+  return {
+    message: error instanceof Error ? error.message : String(error),
+  };
+}
+
+function readJobSourceId(payload: Record<string, unknown>): string | null {
+  return typeof payload.sourceId === "string" ? payload.sourceId : null;
 }

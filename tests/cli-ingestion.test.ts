@@ -41,11 +41,12 @@ async function createDatabaseUrl() {
 }
 
 type TestSourceConfig = {
-  adapter: "fake";
-  fixtureId: string;
+  adapter: string;
+  fixtureId?: string;
   name: string;
   domain: string;
   startUrl: string;
+  [key: string]: unknown;
 };
 
 async function writeSeedSourceFile(
@@ -78,14 +79,19 @@ async function writeSeedSourceFile(
   return sourceConfigPath;
 }
 
-async function runWorkerUntilEmpty(databaseUrl: string) {
+async function runWorkerUntilEmpty(
+  databaseUrl: string,
+  deps: Parameters<typeof executeCli>[1] = {},
+) {
   const outputs: Array<Record<string, unknown>> = [];
 
   while (true) {
-    const output = JSON.parse(await executeCli(["run-worker"], { databaseUrl })) as Record<
-      string,
-      unknown
-    >;
+    const output = JSON.parse(
+      await executeCli(["run-worker"], {
+        databaseUrl,
+        ...deps,
+      }),
+    ) as Record<string, unknown>;
     outputs.push(output);
     if (output.processed === 0) {
       return outputs;
@@ -562,5 +568,204 @@ describe("CLI ingestion skeleton", () => {
     expect(debugInspectOutput).toContain("start_url HTTPS://private.example.test/coins?b=2&a=1#top");
     expect(debugInspectOutput).toContain("url https://private.example.test/coins?a=1&b=2");
     expect(debugInspectOutput).toContain("title Catalog Listing");
+  });
+
+  it("integrates Firecrawl behind the crawl provider boundary, retries transient page failures, and isolates failed pages from the run", async () => {
+    const { databaseUrl, db } = await createDatabaseUrl();
+    const runId = randomUUID();
+    const sourceConfigPath = await writeSeedSourceFile({
+      adapter: "firecrawl",
+      apiKey: "fc-test-key",
+      name: "Private Source Name",
+      domain: "private.example.test",
+      startUrl: "https://private.example.test/coins",
+      ratePolicy: {
+        minDelayMs: 0,
+        backoffBaseMs: 0,
+        attemptLimit: 2,
+      },
+    });
+
+    const scrapeAttempts = new Map<string, number>();
+    const firecrawlClientFactory = () => ({
+      async scrapeUrl({ url }: { url: string }) {
+        const nextAttempt = (scrapeAttempts.get(url) ?? 0) + 1;
+        scrapeAttempts.set(url, nextAttempt);
+
+        if (url === "https://private.example.test/coins") {
+          return {
+            requestId: "req-listing",
+            data: {
+              html: `
+<html>
+  <body>
+    <section data-page-kind="listing">
+      <h1>Live Listing</h1>
+    </section>
+  </body>
+</html>`.trim(),
+              links: [
+                "https://private.example.test/coins/accepted-coin",
+                "https://private.example.test/coins/failed-coin",
+              ],
+              metadata: {
+                statusCode: 200,
+                title: "Live Listing",
+              },
+            },
+          };
+        }
+
+        if (url === "https://private.example.test/coins/accepted-coin") {
+          return {
+            requestId: "req-accepted",
+            data: {
+              html: `
+<html>
+  <body>
+    <article data-page-kind="coin-detail" data-image-url="https://private.example.test/images/accepted-coin.jpg">
+      <h1>Accepted Firecrawl Coin</h1>
+      <p>Issuer: Example Issuer</p>
+      <p>Denomination: 1 Unit</p>
+      <p>Year: 1901</p>
+    </article>
+  </body>
+</html>`.trim(),
+              links: [],
+              metadata: {
+                statusCode: 200,
+                title: "Accepted Firecrawl Coin",
+              },
+            },
+          };
+        }
+
+        if (url === "https://private.example.test/coins/failed-coin") {
+          throw Object.assign(new Error(`rate limited on attempt ${nextAttempt}`), {
+            statusCode: 429,
+            code: "RATE_LIMITED",
+            requestId: `req-failed-${nextAttempt}`,
+          });
+        }
+
+        throw new Error(`unexpected scrape url: ${url}`);
+      },
+    });
+
+    const seedOutput = await executeCli(["seed-sources", "--file", sourceConfigPath], {
+      databaseUrl,
+      firecrawlClientFactory,
+    });
+
+    expect(JSON.parse(seedOutput)).toMatchObject({
+      seeded: 1,
+      sourceIds: [SEEDED_SOURCE_ID],
+    });
+
+    const createOutput = await executeCli(
+      [
+        "create-run",
+        "--run-id",
+        runId,
+        "--source-id",
+        SEEDED_SOURCE_ID,
+        "--scope",
+        "issuer_scope",
+      ],
+      { databaseUrl, firecrawlClientFactory },
+    );
+
+    expect(JSON.parse(createOutput)).toMatchObject({
+      runId,
+      sourceId: SEEDED_SOURCE_ID,
+      status: "queued",
+    });
+
+    const workerOutputs = await runWorkerUntilEmpty(databaseUrl, { firecrawlClientFactory });
+    expect(workerOutputs.some((output) => output.status === "failed")).toBe(true);
+
+    const [run] = await db.select().from(crawlRuns).where(eq(crawlRuns.id, runId));
+    const storedJobs = await db
+      .select()
+      .from(jobs)
+      .where(eq(jobs.crawlRunId, runId))
+      .orderBy(asc(jobs.createdAt));
+    const storedPages = await db
+      .select()
+      .from(rawSourcePages)
+      .where(eq(rawSourcePages.crawlRunId, runId))
+      .orderBy(asc(rawSourcePages.fetchedAt));
+    const storedCandidates = await db
+      .select()
+      .from(coinCandidates)
+      .where(eq(coinCandidates.crawlRunId, runId))
+      .orderBy(asc(coinCandidates.createdAt));
+    const storedAcceptedCoins = await db
+      .select()
+      .from(acceptedCoins)
+      .where(eq(acceptedCoins.crawlRunId, runId))
+      .orderBy(asc(acceptedCoins.createdAt));
+
+    expect(run?.status).toBe("completed");
+    expect(scrapeAttempts).toEqual(
+      new Map([
+        ["https://private.example.test/coins", 1],
+        ["https://private.example.test/coins/accepted-coin", 1],
+        ["https://private.example.test/coins/failed-coin", 2],
+      ]),
+    );
+    expect(storedPages).toHaveLength(2);
+    expect(storedPages[0].providerPayload).toMatchObject({
+      adapter: "firecrawl",
+      requestId: "req-listing",
+      statusCode: 200,
+      links: [
+        "https://private.example.test/coins/accepted-coin",
+        "https://private.example.test/coins/failed-coin",
+      ],
+      metadata: {
+        title: "Live Listing",
+      },
+    });
+    expect(storedPages[1].providerPayload).toMatchObject({
+      adapter: "firecrawl",
+      requestId: "req-accepted",
+      statusCode: 200,
+      links: [],
+      metadata: {
+        title: "Accepted Firecrawl Coin",
+      },
+    });
+    expect(
+      storedJobs.filter((job) => job.kind === FETCH_RAW_SOURCE_PAGE_JOB_KIND).map((job) => ({
+        requestUrl: job.payload.requestUrl,
+        attempts: job.attempts,
+        status: job.status,
+      })),
+    ).toEqual([
+      {
+        requestUrl: "https://private.example.test/coins",
+        attempts: 1,
+        status: JOB_STATUS.completed,
+      },
+      {
+        requestUrl: "https://private.example.test/coins/accepted-coin",
+        attempts: 1,
+        status: JOB_STATUS.completed,
+      },
+      {
+        requestUrl: "https://private.example.test/coins/failed-coin",
+        attempts: 2,
+        status: JOB_STATUS.failed,
+      },
+    ]);
+    expect(storedJobs.find((job) => job.payload.requestUrl === "https://private.example.test/coins/failed-coin")?.errorPayload).toMatchObject({
+      code: "RATE_LIMITED",
+      statusCode: 429,
+      requestId: "req-failed-2",
+      retryable: true,
+    });
+    expect(storedCandidates).toHaveLength(1);
+    expect(storedAcceptedCoins).toHaveLength(1);
   });
 });
