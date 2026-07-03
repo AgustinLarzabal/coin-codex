@@ -137,6 +137,22 @@ export type InspectionJobDetail = {
   };
 };
 
+function readOptionalBoolean(
+  value: Record<string, unknown> | null,
+  key: string,
+): boolean | null {
+  const field = value?.[key];
+  return typeof field === "boolean" ? field : null;
+}
+
+function readOptionalNumber(
+  value: Record<string, unknown> | null,
+  key: string,
+): number | null {
+  const field = value?.[key];
+  return typeof field === "number" ? field : null;
+}
+
 function summarizeJobs(jobsToSummarize: JobRecord[]): StatusSummary {
   const summary: StatusSummary = {
     completed: 0,
@@ -198,6 +214,91 @@ function summarizePagesByType(pages: PageRecord[]) {
 
 function formatJobSummary(prefix: string, summary: StatusSummary): string {
   return `${prefix} total=${summary.total} completed=${summary.completed} failed=${summary.failed} retries=${summary.retries}`;
+}
+
+function buildSourcePrivate(
+  sourceConfig: ReturnType<typeof parseSourceConfig> | null,
+  debugPrivate: boolean,
+): CrawlRunInspectionModel["source"]["private"] {
+  if (!debugPrivate || !sourceConfig) {
+    return undefined;
+  }
+
+  return {
+    name: sourceConfig.name,
+    domain: sourceConfig.domain,
+    startUrl: sourceConfig.startUrl,
+  };
+}
+
+function buildPageDetail(
+  page: PageRecord | undefined,
+  debugPrivate: boolean,
+): InspectionJobDetail["page"] {
+  if (!page) {
+    return undefined;
+  }
+
+  return {
+    id: page.id,
+    pageType: page.pageType,
+    urlHash: redactHash(page.urlHash),
+    contentHash: redactHash(page.contentHash),
+    private: debugPrivate
+      ? {
+          normalizedUrl: page.normalizedUrl,
+          originalUrl: page.originalUrl,
+          title: readPageTitle(page.content),
+        }
+      : undefined,
+  };
+}
+
+function buildErrorDetail(
+  errorPayload: Record<string, unknown> | null,
+  debugPrivate: boolean,
+): InspectionJobDetail["error"] {
+  if (!errorPayload) {
+    return undefined;
+  }
+
+  return {
+    code: readErrorCode(errorPayload) ?? "unknown",
+    retryable: readOptionalBoolean(errorPayload, "retryable"),
+    statusCode: readOptionalNumber(errorPayload, "statusCode"),
+    private: debugPrivate ? errorPayload : undefined,
+  };
+}
+
+function buildCursorSummary(
+  storedCursor: unknown,
+): CrawlRunInspectionModel["cursor"] {
+  const cursor = readStoredCursor(storedCursor);
+  if (!cursor) {
+    return null;
+  }
+
+  return {
+    nextDetailIndex: cursor.nextDetailIndex,
+    totalDetailLinks: cursor.totalDetailLinks,
+  };
+}
+
+function buildJobKindSummaries(
+  runJobs: JobRecord[],
+): CrawlRunInspectionModel["jobKinds"] {
+  const jobsByKind = new Map<string, JobRecord[]>();
+
+  for (const job of runJobs) {
+    const jobsForKind = jobsByKind.get(job.kind) ?? [];
+    jobsForKind.push(job);
+    jobsByKind.set(job.kind, jobsForKind);
+  }
+
+  return [...jobsByKind.entries()].map(([kind, jobsForKind]) => ({
+    kind,
+    summary: summarizeJobs(jobsForKind),
+  }));
 }
 
 function renderInspectionText(model: CrawlRunInspectionModel): string {
@@ -327,16 +428,9 @@ export class IngestionInspector {
     );
     const imageJobSummary = summarizeJobs(imageJobs);
     const pagesByJobId = new Map(pages.map((page) => [page.jobId, page]));
-    const jobsByKind = new Map<string, JobRecord[]>();
     const debugPrivate = options.debugPrivate === true;
-
-    for (const job of runJobs) {
-      const jobsForKind = jobsByKind.get(job.kind) ?? [];
-      jobsForKind.push(job);
-      jobsByKind.set(job.kind, jobsForKind);
-    }
-
     const sourceConfig = source ? parseSourceConfig(source.config) : null;
+    const jobKinds = buildJobKindSummaries(runJobs);
 
     return {
       run: {
@@ -346,14 +440,7 @@ export class IngestionInspector {
       },
       source: {
         id: run.sourceId,
-        private:
-          debugPrivate && sourceConfig
-            ? {
-                name: sourceConfig.name,
-                domain: sourceConfig.domain,
-                startUrl: sourceConfig.startUrl,
-              }
-            : undefined,
+        private: buildSourcePrivate(sourceConfig, debugPrivate),
       },
       jobs: {
         total: runJobs.length,
@@ -365,14 +452,6 @@ export class IngestionInspector {
         failureCount: jobSummary.failed,
         details: runJobs.map((job) => {
           const page = pagesByJobId.get(job.id);
-          const retryable =
-            typeof job.errorPayload?.retryable === "boolean"
-              ? job.errorPayload.retryable
-              : null;
-          const statusCode =
-            typeof job.errorPayload?.statusCode === "number"
-              ? job.errorPayload.statusCode
-              : null;
 
           return {
             id: job.id,
@@ -380,29 +459,8 @@ export class IngestionInspector {
             status: job.status,
             attempts: job.attempts,
             lockToken: job.lockToken,
-            page: page
-              ? {
-                  id: page.id,
-                  pageType: page.pageType,
-                  urlHash: redactHash(page.urlHash),
-                  contentHash: redactHash(page.contentHash),
-                  private: debugPrivate
-                    ? {
-                        normalizedUrl: page.normalizedUrl,
-                        originalUrl: page.originalUrl,
-                        title: readPageTitle(page.content),
-                      }
-                    : undefined,
-                }
-              : undefined,
-            error: job.errorPayload
-              ? {
-                  code: readErrorCode(job.errorPayload) ?? "unknown",
-                  retryable,
-                  statusCode,
-                  private: debugPrivate ? job.errorPayload : undefined,
-                }
-              : undefined,
+            page: buildPageDetail(page, debugPrivate),
+            error: buildErrorDetail(job.errorPayload, debugPrivate),
           };
         }),
       },
@@ -426,21 +484,8 @@ export class IngestionInspector {
         stored: images.length,
         summary: imageJobSummary,
       },
-      cursor: (() => {
-        const cursor = readStoredCursor(run.cursor);
-        if (!cursor) {
-          return null;
-        }
-
-        return {
-          nextDetailIndex: cursor.nextDetailIndex,
-          totalDetailLinks: cursor.totalDetailLinks,
-        };
-      })(),
-      jobKinds: [...jobsByKind.entries()].map(([kind, jobsForKind]) => ({
-        kind,
-        summary: summarizeJobs(jobsForKind),
-      })),
+      cursor: buildCursorSummary(run.cursor),
+      jobKinds,
       quarantinedCandidates: quarantinedCandidates.map((candidate) => ({
         id: candidate.id,
         reason: candidate.quarantineReason,
