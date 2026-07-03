@@ -3,20 +3,24 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@10.19.0",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "sandcastle": "pnpm exec tsx .sandcastle/main.mts"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.3",
     "drizzle-orm": "^0.44.2"
   },
   "devDependencies": {
+    "@ai-hero/sandcastle": "^0.12.0",
     "@types/node": "^24.0.15",
     "drizzle-kit": "^0.31.4",
     "tsx": "^4.20.3",
     "typescript": "^5.9.2",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "zod": "^4.4.3"
   }
 }
