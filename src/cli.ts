@@ -86,7 +86,7 @@ export async function executeCli(argv: string[], deps: CliDeps = {}): Promise<st
         return JSON.stringify(output, null, 2);
       }
       case "inspect-run":
-        return context.inspector.inspectRun(
+        return await context.inspector.inspectRun(
           readRequiredFlag(argv, "--run-id", command),
           { debugPrivate: argv.includes("--debug-private") },
         );

@@ -143,6 +143,41 @@ afterEach(async () => {
 });
 
 describe("CLI ingestion skeleton", () => {
+  it("returns inspect output for file-backed CLI databases", async () => {
+    const databaseDir = await mkdtemp(path.join(tmpdir(), "coincodex-db-"));
+    const databaseUrl = path.join(databaseDir, "pglite");
+    const runId = randomUUID();
+    const sourceConfigPath = await writeSeedSourceFile({
+      adapter: "fake",
+      fixtureId: "fixture-run",
+      name: "Private Source Name",
+      domain: "private.example.test",
+      startUrl: "https://private.example.test/coins",
+    });
+
+    await executeCli(["seed-sources", "--file", sourceConfigPath], { databaseUrl });
+    await executeCli(
+      [
+        "create-run",
+        "--run-id",
+        runId,
+        "--source-id",
+        SEEDED_SOURCE_ID,
+        "--scope",
+        "inspect_regression",
+      ],
+      { databaseUrl },
+    );
+
+    const inspectOutput = await executeCli(["inspect-run", "--run-id", runId], {
+      databaseUrl,
+    });
+
+    expect(inspectOutput).toContain(`run ${runId}`);
+    expect(inspectOutput).toContain("status queued");
+    expect(inspectOutput).toContain("jobs total=1 completed=0 failed=0 retries=0");
+  });
+
   it("extracts rich coin candidates from fixture detail pages and quarantines specimen-like pages", async () => {
     const { databaseUrl, db } = await createDatabaseUrl();
     const runId = randomUUID();
