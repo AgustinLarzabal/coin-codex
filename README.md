@@ -168,6 +168,46 @@ By default, inspection redacts private source URLs and names. To include private
 pnpm exec tsx src/cli.ts inspect-run --run-id <run-id> --debug-private
 ```
 
+## Operator Console
+
+Launch the prompt-driven Operator Console with:
+
+```sh
+pnpm exec tsx src/cli.ts operator-console
+```
+
+You can also point it at a non-default seed file:
+
+```sh
+pnpm exec tsx src/cli.ts operator-console --seed-file ./sources.json
+```
+
+The guided workflow is:
+
+```text
+Seed Sources -> Create Crawl Run -> Process Jobs -> Inspect Results
+```
+
+By default, the console seeds from `.private/sources.json`, which matches the local private workspace convention. Use `--seed-file` to override that path when you want to test a different source configuration.
+
+The console is a guided interface over the same ingestion services as the non-interactive CLI. The existing non-interactive CLI commands remain available for scripts, tests, and direct debugging:
+
+- `seed-sources` seeds source configuration
+- `create-run` creates a crawl run
+- `run-worker` processes queued work
+- `inspect-run` summarizes the run, with optional `--debug-private`
+
+What to expect in the console:
+
+1. `Seed Sources`: validate and store source records from the seed file, then confirm the seeded source ids.
+2. `Create Crawl Run`: choose the source id, scope, and detail page limit; the console keeps the new active run id in context.
+3. `Process Jobs`: choose either `process next job` for one worker step or `process until idle` for the common full-run loop.
+4. `Inspect Results`: review crawl run status, job counts, page counts, candidates, accepted coins, images, cursor progress, and failures.
+
+`process until idle` uses a default 100-job per-action safety cap and lets you override that cap when starting the action. It stops when no processable job remains or when the cap is reached. It also continues through failed jobs and surfaces failures in the progress and summary output so one bad job does not hide the rest of the run.
+
+Private debug is off by default in the console. Turn it on only when needed to reveal private source names, domains, URLs, and private error details during inspection.
+
 ## Ingestion Flow
 
 1. `seed-sources` stores source configuration.
