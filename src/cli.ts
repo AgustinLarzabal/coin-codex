@@ -104,6 +104,8 @@ export async function executeCli(argv: string[], deps: CliDeps = {}): Promise<st
         try {
           return await runOperatorConsole({
             ingestionService: context.ingestionService,
+            worker: context.worker,
+            inspector: context.inspector,
             prompt,
             initialSeedFilePath:
               readFlag(argv, "--seed-file") ?? DEFAULT_OPERATOR_CONSOLE_SEED_FILE,

@@ -218,6 +218,187 @@ describe("CLI ingestion skeleton", () => {
     expect(output).toContain(`active run ${storedRuns[0].id}`);
   });
 
+  it("processes the active run until idle and inspects it from the operator console", async () => {
+    const { databaseUrl, db } = await createDatabaseUrl();
+    const imageProviderFactory = createStubImageProviderFactory();
+    const sourceConfigPath = await writeSeedSourceFile({
+      adapter: "fake",
+      fixtureId: "fixture-run",
+      name: "Private Source Name",
+      domain: "private.example.test",
+      startUrl: "https://private.example.test/coins",
+    });
+
+    const output = await executeCli(["operator-console", "--seed-file", sourceConfigPath], {
+      databaseUrl,
+      imageProviderFactory,
+      operatorConsolePrompt: createStubOperatorConsolePrompt([
+        "",
+        SEEDED_SOURCE_ID,
+        "console_scope",
+        "10",
+        "process-until-idle",
+        "",
+        "inspect",
+        "exit",
+      ]),
+    });
+
+    const storedRuns = await db.select().from(crawlRuns).orderBy(asc(crawlRuns.createdAt));
+    const storedJobs = await db
+      .select()
+      .from(jobs)
+      .where(eq(jobs.crawlRunId, storedRuns[0].id))
+      .orderBy(asc(jobs.scheduledAt), asc(jobs.createdAt));
+
+    expect(storedRuns).toHaveLength(1);
+    expect(output).toContain("Process Jobs");
+    expect(output).toContain("process_until_idle cap 100");
+    expect(output).toContain("process_until_idle idle after 8 jobs");
+    expect(output).toContain("processing_summary completed=8 failed=0 retried=0 queued=0");
+    expect(output).toContain("Inspect Results");
+    expect(output).toContain(`run ${storedRuns[0].id}`);
+    expect(output).toContain("status completed");
+    expect(output).toContain("accepted_coins 1");
+    expect(output).toContain("accepted_coin_images 1");
+    expect(storedJobs).toHaveLength(8);
+    expect(storedJobs.every((job) => job.status === JOB_STATUS.completed)).toBe(true);
+  });
+
+  it("processes one queued job at a time from the operator console and reports remaining queued work", async () => {
+    const { databaseUrl, db } = await createDatabaseUrl();
+    const imageProviderFactory = createStubImageProviderFactory();
+    const sourceConfigPath = await writeSeedSourceFile({
+      adapter: "fake",
+      fixtureId: "fixture-run",
+      name: "Private Source Name",
+      domain: "private.example.test",
+      startUrl: "https://private.example.test/coins",
+    });
+
+    const output = await executeCli(["operator-console", "--seed-file", sourceConfigPath], {
+      databaseUrl,
+      imageProviderFactory,
+      operatorConsolePrompt: createStubOperatorConsolePrompt([
+        "",
+        SEEDED_SOURCE_ID,
+        "console_scope",
+        "10",
+        "process-next",
+        "exit",
+      ]),
+    });
+
+    const [storedRun] = await db.select().from(crawlRuns).orderBy(asc(crawlRuns.createdAt));
+    const storedJobs = await db
+      .select()
+      .from(jobs)
+      .where(eq(jobs.crawlRunId, storedRun.id))
+      .orderBy(asc(jobs.scheduledAt), asc(jobs.createdAt));
+
+    expect(output).toContain("process_next job");
+    expect(output).toContain("processing_summary completed=1 failed=0 retried=0 queued=2");
+    expect(storedJobs).toHaveLength(3);
+    expect(storedJobs.map((job) => job.status)).toEqual([
+      JOB_STATUS.completed,
+      JOB_STATUS.queued,
+      JOB_STATUS.queued,
+    ]);
+  });
+
+  it("stops process-until-idle at the requested cap and reports queued work that remains", async () => {
+    const { databaseUrl, db } = await createDatabaseUrl();
+    const imageProviderFactory = createStubImageProviderFactory();
+    const sourceConfigPath = await writeSeedSourceFile({
+      adapter: "fake",
+      fixtureId: "fixture-run",
+      name: "Private Source Name",
+      domain: "private.example.test",
+      startUrl: "https://private.example.test/coins",
+    });
+
+    const output = await executeCli(["operator-console", "--seed-file", sourceConfigPath], {
+      databaseUrl,
+      imageProviderFactory,
+      operatorConsolePrompt: createStubOperatorConsolePrompt([
+        "",
+        SEEDED_SOURCE_ID,
+        "console_scope",
+        "10",
+        "process-until-idle",
+        "1",
+        "exit",
+      ]),
+    });
+
+    const [storedRun] = await db.select().from(crawlRuns).orderBy(asc(crawlRuns.createdAt));
+    const storedJobs = await db
+      .select()
+      .from(jobs)
+      .where(eq(jobs.crawlRunId, storedRun.id))
+      .orderBy(asc(jobs.scheduledAt), asc(jobs.createdAt));
+
+    expect(output).toContain("process_until_idle cap 1");
+    expect(output).toContain("process_until_idle cap_reached after 1 jobs");
+    expect(output).toContain("processing_summary completed=1 failed=0 retried=0 queued=2");
+    expect(storedJobs).toHaveLength(3);
+    expect(storedJobs.filter((job) => job.status === JOB_STATUS.queued)).toHaveLength(2);
+  });
+
+  it("continues process-until-idle through failed jobs and can reveal private inspection details on demand", async () => {
+    const { databaseUrl } = await createDatabaseUrl();
+    const imageProviderFactory = createStubImageProviderFactory({
+      errorFactory: (imageUrl) =>
+        new ImageProviderError(`failed to download ${imageUrl}`, {
+          code: "IMAGE_TIMEOUT",
+          retryable: true,
+          statusCode: 504,
+          providerPayload: {
+            adapter: "test-image-provider",
+          },
+        }),
+    });
+    const sourceConfigPath = await writeSeedSourceFile({
+      adapter: "fake",
+      fixtureId: "fixture-run",
+      name: "Private Source Name",
+      domain: "private.example.test",
+      startUrl: "https://private.example.test/coins",
+    });
+
+    const output = await executeCli(["operator-console", "--seed-file", sourceConfigPath], {
+      databaseUrl,
+      imageProviderFactory,
+      operatorConsolePrompt: createStubOperatorConsolePrompt([
+        "",
+        SEEDED_SOURCE_ID,
+        "console_scope",
+        "10",
+        "process-until-idle",
+        "",
+        "inspect",
+        "toggle-debug",
+        "inspect",
+        "exit",
+      ]),
+    });
+
+    const inspections = output.split("\n\nInspect Results\n").slice(1);
+
+    expect(output).toContain("process job");
+    expect(output).toContain("status=queued");
+    expect(output).toContain("status=failed");
+    expect(output).toContain("process_until_idle idle after 10 jobs");
+    expect(output).toContain("processing_summary completed=7 failed=1 retried=2 queued=0");
+    expect(inspections[0]).toContain("failures total=1");
+    expect(inspections[0]).not.toContain("Private Source Name");
+    expect(inspections[0]).not.toContain("private.example.test");
+    expect(output).toContain("private_debug on");
+    expect(inspections[1]).toContain("source_name Private Source Name");
+    expect(inspections[1]).toContain("source_domain private.example.test");
+    expect(inspections[1]).toContain("start_url https://private.example.test/coins");
+  });
+
   it("fails operator console seeding visibly before creating a run when the seed file is invalid", async () => {
     const { databaseUrl, db } = await createDatabaseUrl();
     const privateDir = await mkdtemp(path.join(tmpdir(), "coincodex-private-invalid-"));
