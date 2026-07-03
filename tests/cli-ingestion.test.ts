@@ -16,6 +16,7 @@ import {
   FETCH_RAW_SOURCE_PAGE_JOB_KIND,
   JOB_STATUS,
 } from "../src/core/ingestion.js";
+import type { OperatorConsolePrompt } from "../src/core/operator-console.js";
 import {
   ImageProviderError,
   type ImageProvider,
@@ -36,14 +37,9 @@ const resources: Array<{ databaseUrl: string; close: () => Promise<void> }> = []
 const filesystemResources: Array<{ path: string }> = [];
 const SEEDED_SOURCE_ID = "src_test_opaque";
 
-type StubOperatorConsolePrompt = {
-  text: (input: { label: string; defaultValue?: string }) => Promise<string>;
-  close?: () => Promise<void> | void;
-};
-
 function createStubOperatorConsolePrompt(
   answers: string[],
-): StubOperatorConsolePrompt {
+): OperatorConsolePrompt {
   let answerIndex = 0;
 
   return {

@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+
 export type SourceRatePolicy = {
   minDelayMs?: number;
   backoffBaseMs?: number;
@@ -191,4 +193,9 @@ export function parseSeedSourceRecords(value: unknown): SeedSourceRecord[] {
       config: parseSourceConfig(record.config),
     };
   });
+}
+
+export async function readSeedSourceFile(path: string): Promise<SeedSourceRecord[]> {
+  const content = await readFile(path, "utf8");
+  return parseSeedSourceRecords(JSON.parse(content));
 }

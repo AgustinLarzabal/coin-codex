@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 import process from "node:process";
 
@@ -11,7 +10,7 @@ import {
 } from "./core/operator-console.js";
 import type { FirecrawlClient } from "./core/providers/firecrawl-provider.js";
 import type { ImageProvider } from "./core/providers/image-provider.js";
-import { parseSeedSourceRecords } from "./core/source-config.js";
+import { readSeedSourceFile } from "./core/source-config.js";
 
 const DEFAULT_SOURCE_ID = "src_fixture";
 const DEFAULT_SCOPE = "default";
@@ -55,11 +54,6 @@ function readIntegerFlag(args: string[], name: string, fallback: number): number
   return parsed;
 }
 
-async function readSeedFile(path: string) {
-  const content = await readFile(path, "utf8");
-  return parseSeedSourceRecords(JSON.parse(content));
-}
-
 function createReadlineOperatorConsolePrompt(): OperatorConsolePrompt {
   const readline = createInterface({
     input: process.stdin,
@@ -92,7 +86,7 @@ export async function executeCli(argv: string[], deps: CliDeps = {}): Promise<st
   try {
     switch (command) {
       case "seed-sources": {
-        const records = await readSeedFile(readRequiredFlag(argv, "--file", command));
+        const records = await readSeedSourceFile(readRequiredFlag(argv, "--file", command));
         const output = await context.ingestionService.seedSources(records);
         return JSON.stringify(output, null, 2);
       }

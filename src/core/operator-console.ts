@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
 
 import type { IngestionService } from "./ingestion-service.js";
-import { parseSeedSourceRecords } from "./source-config.js";
+import { readSeedSourceFile, type SeedSourceRecord } from "./source-config.js";
 
 export const DEFAULT_OPERATOR_CONSOLE_SEED_FILE = ".private/sources.json";
 const DEFAULT_SCOPE = "default";
@@ -33,11 +32,6 @@ function readPositiveInteger(answer: string, fallback: number, label: string): n
   return parsed;
 }
 
-async function readSeedFile(path: string) {
-  const content = await readFile(path, "utf8");
-  return parseSeedSourceRecords(JSON.parse(content));
-}
-
 export async function runOperatorConsole({
   ingestionService,
   prompt,
@@ -49,18 +43,19 @@ export async function runOperatorConsole({
     "",
     "Seed Sources",
   ];
+  const defaultSeedFilePath = initialSeedFilePath ?? DEFAULT_OPERATOR_CONSOLE_SEED_FILE;
 
   const seedFilePath = readPromptValue(
     await prompt.text({
       label: "Seed file path",
-      defaultValue: initialSeedFilePath ?? DEFAULT_OPERATOR_CONSOLE_SEED_FILE,
+      defaultValue: defaultSeedFilePath,
     }),
-    initialSeedFilePath ?? DEFAULT_OPERATOR_CONSOLE_SEED_FILE,
+    defaultSeedFilePath,
   );
 
-  let records;
+  let records: SeedSourceRecord[];
   try {
-    records = await readSeedFile(seedFilePath);
+    records = await readSeedSourceFile(seedFilePath);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`seed failed for ${seedFilePath}: ${message}`);
