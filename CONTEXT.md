@@ -72,6 +72,10 @@ _Avoid_: Raw source page
 A bounded execution of Source discovery and page fetching, defined by private source configuration plus limits such as country, listing path, maximum coin detail pages, and rate policy.
 _Avoid_: Full source import
 
+**Operator Console**:
+A local interactive interface used by an operator to create, process, and inspect Crawl Runs while preserving private Source boundaries.
+_Avoid_: Admin UI, public UI, dashboard
+
 **Rate Policy**:
 The per-Source rules that control external fetch timing, concurrency, and backoff. MVP fetches should be conservative and single-flight per Source.
 _Avoid_: Worker speed
