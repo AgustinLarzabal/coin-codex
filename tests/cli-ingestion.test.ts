@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import process from "node:process";
 
 import { PGlite } from "@electric-sql/pglite";
 import { asc, eq } from "drizzle-orm";
@@ -32,7 +33,27 @@ import {
 import { createDatabase, registerDatabase, unregisterDatabase } from "../src/db/setup.js";
 
 const resources: Array<{ databaseUrl: string; close: () => Promise<void> }> = [];
+const filesystemResources: Array<{ path: string }> = [];
 const SEEDED_SOURCE_ID = "src_test_opaque";
+
+type StubOperatorConsolePrompt = {
+  text: (input: { label: string; defaultValue?: string }) => Promise<string>;
+  close?: () => Promise<void> | void;
+};
+
+function createStubOperatorConsolePrompt(
+  answers: string[],
+): StubOperatorConsolePrompt {
+  let answerIndex = 0;
+
+  return {
+    async text() {
+      const answer = answers[answerIndex];
+      answerIndex += 1;
+      return answer ?? "";
+    },
+  };
+}
 
 type StubImageProviderOptions = {
   resolveContent?: (imageUrl: string) => Uint8Array;
@@ -140,9 +161,89 @@ afterEach(async () => {
       await resource.close();
     }),
   );
+  await Promise.all(
+    filesystemResources.splice(0).map(async (resource) => {
+      await rm(resource.path, { force: true });
+    }),
+  );
 });
 
 describe("CLI ingestion skeleton", () => {
+  it("launches the operator console seed and create-run workflow with the default seed path", async () => {
+    const { databaseUrl, db } = await createDatabaseUrl();
+    const privateDir = path.join(process.cwd(), ".private");
+    const defaultSeedPath = path.join(privateDir, "sources.json");
+
+    await mkdir(privateDir, { recursive: true });
+    filesystemResources.push({ path: defaultSeedPath });
+    await writeFile(
+      defaultSeedPath,
+      JSON.stringify([
+        {
+          id: SEEDED_SOURCE_ID,
+          config: {
+            adapter: "fake",
+            fixtureId: "fixture-run",
+            name: "Private Source Name",
+            domain: "private.example.test",
+            startUrl: "https://private.example.test/coins",
+          },
+        },
+      ]),
+    );
+
+    const output = await executeCli(["operator-console"], {
+      databaseUrl,
+      operatorConsolePrompt: createStubOperatorConsolePrompt([
+        "",
+        SEEDED_SOURCE_ID,
+        "console_scope",
+        "7",
+      ]),
+    });
+
+    const storedRuns = await db.select().from(crawlRuns).orderBy(asc(crawlRuns.createdAt));
+
+    expect(output).toContain(
+      "Seed Sources -> Create Crawl Run -> Process Jobs -> Inspect Results",
+    );
+    expect(output).toContain(`seed file .private/sources.json`);
+    expect(output).toContain(`seeded source ids ${SEEDED_SOURCE_ID}`);
+    expect(output).toContain(`source ${SEEDED_SOURCE_ID}`);
+    expect(output).toContain("scope console_scope");
+    expect(output).toContain("status queued");
+    expect(storedRuns).toHaveLength(1);
+    expect(storedRuns[0]).toMatchObject({
+      sourceId: SEEDED_SOURCE_ID,
+      scope: "console_scope",
+      detailLimit: 7,
+      status: "queued",
+    });
+    expect(output).toContain(`active run ${storedRuns[0].id}`);
+  });
+
+  it("fails operator console seeding visibly before creating a run when the seed file is invalid", async () => {
+    const { databaseUrl, db } = await createDatabaseUrl();
+    const privateDir = await mkdtemp(path.join(tmpdir(), "coincodex-private-invalid-"));
+    const invalidSeedPath = path.join(privateDir, "sources.json");
+
+    filesystemResources.push({ path: invalidSeedPath });
+    await writeFile(invalidSeedPath, JSON.stringify({ id: SEEDED_SOURCE_ID }));
+
+    await expect(
+      executeCli(["operator-console"], {
+        databaseUrl,
+        operatorConsolePrompt: createStubOperatorConsolePrompt([invalidSeedPath]),
+      }),
+    ).rejects.toThrow(
+      `seed failed for ${invalidSeedPath}: seed file must contain an array of sources`,
+    );
+
+    const storedRuns = await db.select().from(crawlRuns);
+
+    expect(storedRuns).toHaveLength(0);
+  });
+
   it("returns inspect output for file-backed CLI databases", async () => {
     const databaseDir = await mkdtemp(path.join(tmpdir(), "coincodex-db-"));
     const databaseUrl = path.join(databaseDir, "pglite");

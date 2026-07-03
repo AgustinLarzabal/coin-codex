@@ -1,8 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { createInterface } from "node:readline/promises";
 import process from "node:process";
 
 import { createAppContext } from "./core/context.js";
+import {
+  DEFAULT_OPERATOR_CONSOLE_SEED_FILE,
+  runOperatorConsole,
+  type OperatorConsolePrompt,
+} from "./core/operator-console.js";
 import type { FirecrawlClient } from "./core/providers/firecrawl-provider.js";
 import type { ImageProvider } from "./core/providers/image-provider.js";
 import { parseSeedSourceRecords } from "./core/source-config.js";
@@ -14,6 +20,7 @@ type CliDeps = {
   databaseUrl?: string;
   firecrawlClientFactory?: () => FirecrawlClient;
   imageProviderFactory?: () => ImageProvider;
+  operatorConsolePrompt?: OperatorConsolePrompt;
 };
 
 function readFlag(args: string[], name: string): string | undefined {
@@ -53,6 +60,23 @@ async function readSeedFile(path: string) {
   return parseSeedSourceRecords(JSON.parse(content));
 }
 
+function createReadlineOperatorConsolePrompt(): OperatorConsolePrompt {
+  const readline = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  return {
+    async text({ label, defaultValue }) {
+      const suffix = defaultValue ? ` [${defaultValue}]` : "";
+      return readline.question(`${label}${suffix}: `);
+    },
+    async close() {
+      readline.close();
+    },
+  };
+}
+
 export async function executeCli(argv: string[], deps: CliDeps = {}): Promise<string> {
   const [command] = argv;
   if (!command) {
@@ -80,6 +104,19 @@ export async function executeCli(argv: string[], deps: CliDeps = {}): Promise<st
           detailLimit: readIntegerFlag(argv, "--detail-limit", 10),
         });
         return JSON.stringify(output, null, 2);
+      }
+      case "operator-console": {
+        const prompt = deps.operatorConsolePrompt ?? createReadlineOperatorConsolePrompt();
+        try {
+          return await runOperatorConsole({
+            ingestionService: context.ingestionService,
+            prompt,
+            initialSeedFilePath:
+              readFlag(argv, "--seed-file") ?? DEFAULT_OPERATOR_CONSOLE_SEED_FILE,
+          });
+        } finally {
+          await prompt.close?.();
+        }
       }
       case "run-worker": {
         const output = await context.worker.runOnce();
