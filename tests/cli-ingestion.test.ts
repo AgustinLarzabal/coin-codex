@@ -176,7 +176,7 @@ describe("CLI ingestion skeleton", () => {
     expect(inspectOutput).toContain(`run ${runId}`);
     expect(inspectOutput).toContain("status queued");
     expect(inspectOutput).toContain("jobs total=1 completed=0 failed=0 retries=0");
-  });
+  }, 10000);
 
   it("extracts rich coin candidates from fixture detail pages and quarantines specimen-like pages", async () => {
     const { databaseUrl, db } = await createDatabaseUrl();

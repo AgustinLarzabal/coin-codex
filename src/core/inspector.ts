@@ -41,7 +41,7 @@ function readErrorCode(
 type JobRecord = typeof jobs.$inferSelect;
 type PageRecord = typeof rawSourcePages.$inferSelect;
 
-type StatusSummary = {
+export type StatusSummary = {
   completed: number;
   failed: number;
   queued: number;
@@ -50,17 +50,104 @@ type StatusSummary = {
   total: number;
 };
 
-function summarizeJobs(jobs: JobRecord[]): StatusSummary {
+export type CrawlRunInspectionModel = {
+  run: {
+    id: string;
+    sourceId: string;
+    status: string;
+  };
+  source: {
+    id: string;
+    private?: {
+      name?: string;
+      domain?: string;
+      startUrl: string;
+    };
+  };
+  jobs: {
+    total: number;
+    summary: StatusSummary;
+    byStatus: {
+      queued: number;
+      running: number;
+    };
+    failureCount: number;
+    details: InspectionJobDetail[];
+  };
+  rawPages: {
+    total: number;
+    byType: {
+      detail: number;
+      listing: number;
+      unknown: number;
+    };
+  };
+  candidates: {
+    total: number;
+    accepted: number;
+    quarantined: number;
+  };
+  acceptedCoins: {
+    total: number;
+  };
+  acceptedCoinImages: {
+    total: number;
+  };
+  imageJobs: {
+    total: number;
+    stored: number;
+    summary: StatusSummary;
+  };
+  cursor: {
+    nextDetailIndex: number;
+    totalDetailLinks: number;
+  } | null;
+  jobKinds: Array<{
+    kind: string;
+    summary: StatusSummary;
+  }>;
+  quarantinedCandidates: Array<{
+    id: string;
+    reason: string | null;
+  }>;
+};
+
+export type InspectionJobDetail = {
+  id: string;
+  kind: string;
+  status: string;
+  attempts: number;
+  lockToken: string | null;
+  page?: {
+    id: string;
+    pageType: string;
+    urlHash: string;
+    contentHash: string;
+    private?: {
+      normalizedUrl: string;
+      originalUrl: string;
+      title?: string;
+    };
+  };
+  error?: {
+    code: string;
+    retryable: boolean | null;
+    statusCode: number | null;
+    private?: Record<string, unknown>;
+  };
+};
+
+function summarizeJobs(jobsToSummarize: JobRecord[]): StatusSummary {
   const summary: StatusSummary = {
     completed: 0,
     failed: 0,
     queued: 0,
     running: 0,
     retries: 0,
-    total: jobs.length,
+    total: jobsToSummarize.length,
   };
 
-  for (const job of jobs) {
+  for (const job of jobsToSummarize) {
     summary.retries += countRetries(job.attempts);
     switch (job.status) {
       case JOB_STATUS.completed:
@@ -113,18 +200,74 @@ function formatJobSummary(prefix: string, summary: StatusSummary): string {
   return `${prefix} total=${summary.total} completed=${summary.completed} failed=${summary.failed} retries=${summary.retries}`;
 }
 
-function formatErrorSummary(job: JobRecord): string {
-  const code = readErrorCode(job.errorPayload) ?? "unknown";
-  const statusCode =
-    typeof job.errorPayload?.statusCode === "number"
-      ? String(job.errorPayload.statusCode)
-      : "unknown";
-  const retryable =
-    typeof job.errorPayload?.retryable === "boolean"
-      ? String(job.errorPayload.retryable)
-      : "unknown";
+function renderInspectionText(model: CrawlRunInspectionModel): string {
+  const lines = [
+    `run ${model.run.id}`,
+    `source ${model.run.sourceId}`,
+    `status ${model.run.status}`,
+    `jobs ${model.jobs.total}`,
+    formatJobSummary("jobs", model.jobs.summary),
+    `job_status queued=${model.jobs.byStatus.queued} running=${model.jobs.byStatus.running}`,
+    `raw_pages ${model.rawPages.total}`,
+    `raw_pages total=${model.rawPages.total} listing=${model.rawPages.byType.listing} detail=${model.rawPages.byType.detail} unknown=${model.rawPages.byType.unknown}`,
+    `candidates accepted=${model.candidates.accepted} quarantined=${model.candidates.quarantined}`,
+    `accepted_coins ${model.acceptedCoins.total}`,
+    `accepted_coin_images ${model.acceptedCoinImages.total}`,
+    `${formatJobSummary("image_jobs", model.imageJobs.summary)} stored=${model.imageJobs.stored}`,
+    `failures total=${model.jobs.failureCount}`,
+  ];
 
-  return `error job=${job.id} error_code=${code} status_code=${statusCode} retryable=${retryable}`;
+  if (model.cursor) {
+    lines.push(
+      `cursor next_detail_index=${model.cursor.nextDetailIndex} total_detail_links=${model.cursor.totalDetailLinks}`,
+    );
+  }
+
+  if (model.source.private) {
+    if (model.source.private.name) {
+      lines.push(`source_name ${model.source.private.name}`);
+    }
+    if (model.source.private.domain) {
+      lines.push(`source_domain ${model.source.private.domain}`);
+    }
+    lines.push(`start_url ${model.source.private.startUrl}`);
+  }
+
+  for (const jobKind of model.jobKinds) {
+    lines.push(formatJobSummary(`job_kind ${jobKind.kind}`, jobKind.summary));
+  }
+
+  for (const job of model.jobs.details) {
+    lines.push(
+      `job ${job.id} ${job.kind} status=${job.status} attempts=${job.attempts} lock=${job.lockToken ?? "none"}`,
+    );
+    if (job.page) {
+      lines.push(
+        `page ${job.page.id} page_type=${job.page.pageType} url_hash=${job.page.urlHash} content_hash=${job.page.contentHash}`,
+      );
+      if (job.page.private) {
+        lines.push(`url ${job.page.private.normalizedUrl}`);
+        lines.push(`original_url ${job.page.private.originalUrl}`);
+        if (job.page.private.title) {
+          lines.push(`title ${job.page.private.title}`);
+        }
+      }
+    }
+    if (job.error) {
+      lines.push(
+        `error job=${job.id} error_code=${job.error.code} status_code=${job.error.statusCode ?? "unknown"} retryable=${job.error.retryable ?? "unknown"}`,
+      );
+      if (job.error.private) {
+        lines.push(`error_private ${JSON.stringify(job.error.private)}`);
+      }
+    }
+  }
+
+  for (const candidate of model.quarantinedCandidates) {
+    lines.push(`candidate ${candidate.id} status=quarantined reason=${candidate.reason}`);
+  }
+
+  return lines.join("\n");
 }
 
 type InspectRunOptions = {
@@ -134,7 +277,10 @@ type InspectRunOptions = {
 export class IngestionInspector {
   constructor(private readonly db: Database) {}
 
-  async inspectRun(runId: string, options: InspectRunOptions = {}): Promise<string> {
+  async inspectRunModel(
+    runId: string,
+    options: InspectRunOptions = {},
+  ): Promise<CrawlRunInspectionModel> {
     const [run] = await this.db.select().from(crawlRuns).where(eq(crawlRuns.id, runId));
     if (!run) {
       throw new Error(`run not found: ${runId}`);
@@ -167,6 +313,7 @@ export class IngestionInspector {
       .from(acceptedCoinImages)
       .where(eq(acceptedCoinImages.crawlRunId, runId))
       .orderBy(asc(acceptedCoinImages.createdAt));
+
     const acceptedCandidates = candidates.filter(
       (candidate) => candidate.status === COIN_CANDIDATE_STATUS.accepted,
     );
@@ -179,41 +326,9 @@ export class IngestionInspector {
       (job) => job.kind === DOWNLOAD_ACCEPTED_COIN_IMAGE_JOB_KIND,
     );
     const imageJobSummary = summarizeJobs(imageJobs);
-
-    const lines = [
-      `run ${run.id}`,
-      `source ${run.sourceId}`,
-      `status ${run.status}`,
-      `jobs ${runJobs.length}`,
-      formatJobSummary("jobs", jobSummary),
-      `job_status queued=${jobSummary.queued} running=${jobSummary.running}`,
-      `raw_pages ${pages.length}`,
-      `raw_pages total=${pages.length} listing=${pageTypeCounts.listing} detail=${pageTypeCounts.detail} unknown=${pageTypeCounts.unknown}`,
-      `candidates accepted=${acceptedCandidates.length} quarantined=${quarantinedCandidates.length}`,
-      `accepted_coins ${accepted.length}`,
-      `accepted_coin_images ${images.length}`,
-      `${formatJobSummary("image_jobs", imageJobSummary)} stored=${images.length}`,
-      `failures total=${jobSummary.failed}`,
-    ];
-    const cursor = readStoredCursor(run.cursor);
-    if (cursor) {
-      lines.push(
-        `cursor next_detail_index=${cursor.nextDetailIndex} total_detail_links=${cursor.totalDetailLinks}`,
-      );
-    }
-    const debugPrivate = options.debugPrivate === true;
-    const sourceConfig = source ? parseSourceConfig(source.config) : null;
-    if (debugPrivate && sourceConfig) {
-      if (sourceConfig.name) {
-        lines.push(`source_name ${sourceConfig.name}`);
-      }
-      if (sourceConfig.domain) {
-        lines.push(`source_domain ${sourceConfig.domain}`);
-      }
-      lines.push(`start_url ${sourceConfig.startUrl}`);
-    }
     const pagesByJobId = new Map(pages.map((page) => [page.jobId, page]));
     const jobsByKind = new Map<string, JobRecord[]>();
+    const debugPrivate = options.debugPrivate === true;
 
     for (const job of runJobs) {
       const jobsForKind = jobsByKind.get(job.kind) ?? [];
@@ -221,42 +336,120 @@ export class IngestionInspector {
       jobsByKind.set(job.kind, jobsForKind);
     }
 
-    for (const [kind, jobsForKind] of jobsByKind) {
-      lines.push(formatJobSummary(`job_kind ${kind}`, summarizeJobs(jobsForKind)));
-    }
+    const sourceConfig = source ? parseSourceConfig(source.config) : null;
 
-    for (const job of runJobs) {
-      lines.push(
-        `job ${job.id} ${job.kind} status=${job.status} attempts=${job.attempts} lock=${job.lockToken ?? "none"}`,
-      );
-      const page = pagesByJobId.get(job.id);
-      if (page) {
-        lines.push(
-          `page ${page.id} page_type=${page.pageType} url_hash=${redactHash(page.urlHash)} content_hash=${redactHash(page.contentHash)}`,
-        );
-        if (debugPrivate) {
-          lines.push(`url ${page.normalizedUrl}`);
-          lines.push(`original_url ${page.originalUrl}`);
-          const title = readPageTitle(page.content);
-          if (title) {
-            lines.push(`title ${title}`);
-          }
+    return {
+      run: {
+        id: run.id,
+        sourceId: run.sourceId,
+        status: run.status,
+      },
+      source: {
+        id: run.sourceId,
+        private:
+          debugPrivate && sourceConfig
+            ? {
+                name: sourceConfig.name,
+                domain: sourceConfig.domain,
+                startUrl: sourceConfig.startUrl,
+              }
+            : undefined,
+      },
+      jobs: {
+        total: runJobs.length,
+        summary: jobSummary,
+        byStatus: {
+          queued: jobSummary.queued,
+          running: jobSummary.running,
+        },
+        failureCount: jobSummary.failed,
+        details: runJobs.map((job) => {
+          const page = pagesByJobId.get(job.id);
+          const retryable =
+            typeof job.errorPayload?.retryable === "boolean"
+              ? job.errorPayload.retryable
+              : null;
+          const statusCode =
+            typeof job.errorPayload?.statusCode === "number"
+              ? job.errorPayload.statusCode
+              : null;
+
+          return {
+            id: job.id,
+            kind: job.kind,
+            status: job.status,
+            attempts: job.attempts,
+            lockToken: job.lockToken,
+            page: page
+              ? {
+                  id: page.id,
+                  pageType: page.pageType,
+                  urlHash: redactHash(page.urlHash),
+                  contentHash: redactHash(page.contentHash),
+                  private: debugPrivate
+                    ? {
+                        normalizedUrl: page.normalizedUrl,
+                        originalUrl: page.originalUrl,
+                        title: readPageTitle(page.content),
+                      }
+                    : undefined,
+                }
+              : undefined,
+            error: job.errorPayload
+              ? {
+                  code: readErrorCode(job.errorPayload) ?? "unknown",
+                  retryable,
+                  statusCode,
+                  private: debugPrivate ? job.errorPayload : undefined,
+                }
+              : undefined,
+          };
+        }),
+      },
+      rawPages: {
+        total: pages.length,
+        byType: pageTypeCounts,
+      },
+      candidates: {
+        total: candidates.length,
+        accepted: acceptedCandidates.length,
+        quarantined: quarantinedCandidates.length,
+      },
+      acceptedCoins: {
+        total: accepted.length,
+      },
+      acceptedCoinImages: {
+        total: images.length,
+      },
+      imageJobs: {
+        total: imageJobs.length,
+        stored: images.length,
+        summary: imageJobSummary,
+      },
+      cursor: (() => {
+        const cursor = readStoredCursor(run.cursor);
+        if (!cursor) {
+          return null;
         }
-      }
-      if (job.errorPayload) {
-        lines.push(formatErrorSummary(job));
-        if (debugPrivate) {
-          lines.push(`error_private ${JSON.stringify(job.errorPayload)}`);
-        }
-      }
-    }
 
-    for (const candidate of quarantinedCandidates) {
-      lines.push(
-        `candidate ${candidate.id} status=quarantined reason=${candidate.quarantineReason}`,
-      );
-    }
+        return {
+          nextDetailIndex: cursor.nextDetailIndex,
+          totalDetailLinks: cursor.totalDetailLinks,
+        };
+      })(),
+      jobKinds: [...jobsByKind.entries()].map(([kind, jobsForKind]) => ({
+        kind,
+        summary: summarizeJobs(jobsForKind),
+      })),
+      quarantinedCandidates: quarantinedCandidates.map((candidate) => ({
+        id: candidate.id,
+        reason: candidate.quarantineReason,
+      })),
+    };
+  }
 
-    return lines.join("\n");
+  async inspectRun(runId: string, options: InspectRunOptions = {}): Promise<string> {
+    const model = await this.inspectRunModel(runId, options);
+    return renderInspectionText(model);
   }
 }
