@@ -421,6 +421,270 @@ describe("CLI ingestion skeleton", () => {
     expect(storedRuns).toHaveLength(0);
   });
 
+  it("processes the next queued job from the operator console active run", async () => {
+    const { databaseUrl, db } = await createDatabaseUrl();
+    const sourceConfigPath = await writeSeedSourceFile({
+      adapter: "fake",
+      fixtureId: "fixture-run",
+      name: "Private Source Name",
+      domain: "private.example.test",
+      startUrl: "https://private.example.test/coins",
+    });
+
+    const output = await executeCli(["operator-console", "--seed-file", sourceConfigPath], {
+      databaseUrl,
+      operatorConsolePrompt: createStubOperatorConsolePrompt([
+        "",
+        SEEDED_SOURCE_ID,
+        "console_scope",
+        "10",
+        "process-next-job",
+      ]),
+    });
+
+    const storedRuns = await db.select().from(crawlRuns).orderBy(asc(crawlRuns.createdAt));
+    const storedJobs = await db
+      .select()
+      .from(jobs)
+      .where(eq(jobs.crawlRunId, storedRuns[0].id))
+      .orderBy(asc(jobs.scheduledAt), asc(jobs.createdAt));
+
+    expect(output).toContain("Process Jobs");
+    expect(output).toContain("action process-next-job");
+    expect(output).toContain("processed jobs 1");
+    expect(output).toContain("last job fetch_raw_source_page status=completed");
+    expect(output).toContain("jobs completed=1 failed=0 queued=2 retries=0");
+    expect(output).toContain("visible failures 0");
+    expect(storedJobs).toHaveLength(3);
+    expect(storedJobs.map((job) => ({ kind: job.kind, status: job.status }))).toEqual([
+      {
+        kind: FETCH_RAW_SOURCE_PAGE_JOB_KIND,
+        status: JOB_STATUS.completed,
+      },
+      {
+        kind: FETCH_RAW_SOURCE_PAGE_JOB_KIND,
+        status: JOB_STATUS.queued,
+      },
+      {
+        kind: FETCH_RAW_SOURCE_PAGE_JOB_KIND,
+        status: JOB_STATUS.queued,
+      },
+    ]);
+  });
+
+  it("processes jobs until idle from the operator console active run", async () => {
+    const { databaseUrl, db } = await createDatabaseUrl();
+    const imageProviderFactory = createStubImageProviderFactory();
+    const sourceConfigPath = await writeSeedSourceFile({
+      adapter: "fake",
+      fixtureId: "fixture-run",
+      name: "Private Source Name",
+      domain: "private.example.test",
+      startUrl: "https://private.example.test/coins",
+    });
+
+    const output = await executeCli(["operator-console", "--seed-file", sourceConfigPath], {
+      databaseUrl,
+      imageProviderFactory,
+      operatorConsolePrompt: createStubOperatorConsolePrompt([
+        "",
+        SEEDED_SOURCE_ID,
+        "console_scope",
+        "10",
+        "process-until-idle",
+        "",
+      ]),
+    });
+
+    const storedRuns = await db.select().from(crawlRuns).orderBy(asc(crawlRuns.createdAt));
+    const [run] = storedRuns;
+
+    expect(output).toContain("action process-until-idle");
+    expect(output).toContain("processed jobs 8");
+    expect(output).toContain("stop reason idle");
+    expect(output).toContain("last job download_accepted_coin_image status=completed");
+    expect(output).toContain("jobs completed=8 failed=0 queued=0 retries=0");
+    expect(output).toContain("visible failures 0");
+    expect(run.status).toBe("completed");
+  });
+
+  it("stops operator console processing at the configured cap when work remains", async () => {
+    const { databaseUrl, db } = await createDatabaseUrl();
+    const sourceConfigPath = await writeSeedSourceFile(
+      "fixture-catalog",
+      "HTTPS://private.example.test/coins?b=2&a=1#top",
+    );
+
+    const output = await executeCli(["operator-console", "--seed-file", sourceConfigPath], {
+      databaseUrl,
+      operatorConsolePrompt: createStubOperatorConsolePrompt([
+        "",
+        SEEDED_SOURCE_ID,
+        "console_scope",
+        "10",
+        "process-until-idle",
+        "2",
+      ]),
+    });
+
+    const storedRuns = await db.select().from(crawlRuns).orderBy(asc(crawlRuns.createdAt));
+    const storedJobs = await db
+      .select()
+      .from(jobs)
+      .where(eq(jobs.crawlRunId, storedRuns[0].id))
+      .orderBy(asc(jobs.scheduledAt), asc(jobs.createdAt));
+
+    expect(output).toContain("action process-until-idle");
+    expect(output).toContain("processed jobs 2");
+    expect(output).toContain("stop reason cap");
+    expect(output).toContain("jobs completed=2 failed=0 queued=10 retries=0");
+    expect(output).toContain("visible failures 0");
+    expect(storedJobs.filter((job) => job.status === JOB_STATUS.queued)).toHaveLength(10);
+    expect(storedRuns[0].status).toBe("queued");
+  });
+
+  it("continues operator console processing through failed jobs and surfaces failures", async () => {
+    const { databaseUrl, db } = await createDatabaseUrl();
+    const imageProviderFactory = createStubImageProviderFactory();
+    const sourceConfigPath = await writeSeedSourceFile({
+      adapter: "firecrawl",
+      apiKey: "fc-test-key",
+      name: "Private Source Name",
+      domain: "private.example.test",
+      startUrl: "https://private.example.test/coins",
+      ratePolicy: {
+        minDelayMs: 0,
+        backoffBaseMs: 0,
+        attemptLimit: 2,
+      },
+    });
+
+    const scrapeAttempts = new Map<string, number>();
+    const firecrawlClientFactory = () => ({
+      async scrapeUrl({ url }: { url: string }) {
+        const nextAttempt = (scrapeAttempts.get(url) ?? 0) + 1;
+        scrapeAttempts.set(url, nextAttempt);
+
+        if (url === "https://private.example.test/coins") {
+          return {
+            requestId: "req-listing",
+            data: {
+              html: `
+<html>
+  <body>
+    <section data-page-kind="listing">
+      <h1>Live Listing</h1>
+    </section>
+  </body>
+</html>`.trim(),
+              links: [
+                "https://private.example.test/coins/accepted-coin",
+                "https://private.example.test/coins/failed-coin",
+              ],
+              metadata: {
+                statusCode: 200,
+                title: "Live Listing",
+              },
+            },
+          };
+        }
+
+        if (url === "https://private.example.test/coins/accepted-coin") {
+          return {
+            requestId: "req-accepted",
+            data: {
+              html: `
+<html>
+  <body>
+    <article data-page-kind="coin-detail" data-image-url="https://private.example.test/images/accepted-coin.jpg">
+      <h1>Accepted Firecrawl Coin</h1>
+      <p>Issuer: Example Issuer</p>
+      <p>Denomination: 1 Unit</p>
+      <p>Year: 1901</p>
+    </article>
+  </body>
+</html>`.trim(),
+              links: [],
+              metadata: {
+                statusCode: 200,
+                title: "Accepted Firecrawl Coin",
+              },
+            },
+          };
+        }
+
+        if (url === "https://private.example.test/coins/failed-coin") {
+          throw Object.assign(new Error(`rate limited on attempt ${nextAttempt}`), {
+            statusCode: 429,
+            code: "RATE_LIMITED",
+            requestId: `req-failed-${nextAttempt}`,
+          });
+        }
+
+        throw new Error(`unexpected scrape url: ${url}`);
+      },
+    });
+
+    const output = await executeCli(["operator-console", "--seed-file", sourceConfigPath], {
+      databaseUrl,
+      firecrawlClientFactory,
+      imageProviderFactory,
+      operatorConsolePrompt: createStubOperatorConsolePrompt([
+        "",
+        SEEDED_SOURCE_ID,
+        "console_scope",
+        "10",
+        "process-until-idle",
+        "",
+      ]),
+    });
+
+    const storedRuns = await db.select().from(crawlRuns).orderBy(asc(crawlRuns.createdAt));
+    const storedJobs = await db
+      .select()
+      .from(jobs)
+      .where(eq(jobs.crawlRunId, storedRuns[0].id))
+      .orderBy(asc(jobs.createdAt));
+
+    expect(output).toContain("action process-until-idle");
+    expect(output).toContain("processed jobs 7");
+    expect(output).toContain("stop reason idle");
+    expect(output).toContain("jobs completed=5 failed=1 queued=0 retries=1");
+    expect(output).toContain("visible failures 2");
+    expect(output).toContain("kind=fetch_raw_source_page status=failed code=RATE_LIMITED");
+    expect(scrapeAttempts).toEqual(
+      new Map([
+        ["https://private.example.test/coins", 1],
+        ["https://private.example.test/coins/accepted-coin", 1],
+        ["https://private.example.test/coins/failed-coin", 2],
+      ]),
+    );
+    expect(storedRuns[0].status).toBe("completed");
+    expect(
+      storedJobs.filter((job) => job.kind === FETCH_RAW_SOURCE_PAGE_JOB_KIND).map((job) => ({
+        requestUrl: job.payload.requestUrl,
+        attempts: job.attempts,
+        status: job.status,
+      })),
+    ).toEqual([
+      {
+        requestUrl: "https://private.example.test/coins",
+        attempts: 1,
+        status: JOB_STATUS.completed,
+      },
+      {
+        requestUrl: "https://private.example.test/coins/accepted-coin",
+        attempts: 1,
+        status: JOB_STATUS.completed,
+      },
+      {
+        requestUrl: "https://private.example.test/coins/failed-coin",
+        attempts: 2,
+        status: JOB_STATUS.failed,
+      },
+    ]);
+  });
+
   it("returns inspect output for file-backed CLI databases", async () => {
     const databaseDir = await mkdtemp(path.join(tmpdir(), "coincodex-db-"));
     const databaseUrl = path.join(databaseDir, "pglite");

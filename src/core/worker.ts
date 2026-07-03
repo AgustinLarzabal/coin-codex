@@ -657,6 +657,7 @@ export class Worker {
       const sourceConfig = sourceId ? await this.readSourceConfig(sourceId) : null;
       const shouldRetry = shouldRetryJob(job.kind, nextAttempt, job.maxAttempts, error);
       const retryDelayMs = readJobRetryDelayMs(job.kind, sourceConfig, nextAttempt);
+      const errorPayload = buildJobErrorPayload(error);
       await this.db
         .update(jobs)
         .set({
@@ -664,7 +665,7 @@ export class Worker {
           availableAt: new Date(Date.now() + retryDelayMs),
           lockedAt: null,
           lockToken: null,
-          errorPayload: buildJobErrorPayload(error),
+          errorPayload,
           updatedAt: new Date(),
         })
         .where(eq(jobs.id, job.id));
@@ -677,6 +678,7 @@ export class Worker {
         runId: job.crawlRunId,
         kind: job.kind,
         status: shouldRetry ? "queued" : "failed",
+        errorCode: typeof errorPayload.code === "string" ? errorPayload.code : null,
       };
     }
   }

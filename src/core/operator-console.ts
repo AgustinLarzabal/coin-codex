@@ -3,8 +3,8 @@ import { randomUUID } from "node:crypto";
 import { JOB_STATUS } from "./ingestion.js";
 import type { IngestionInspector } from "./inspector.js";
 import type { IngestionService } from "./ingestion-service.js";
-import type { Worker } from "./worker.js";
 import { readSeedSourceFile, type SeedSourceRecord } from "./source-config.js";
+import type { Worker } from "./worker.js";
 
 export const DEFAULT_OPERATOR_CONSOLE_SEED_FILE = ".private/sources.json";
 const DEFAULT_SCOPE = "default";
@@ -31,9 +31,20 @@ type ProcessSummary = {
   queued: number;
 };
 
+type WorkerFailure = {
+  jobId: string;
+  kind: string;
+  status: string;
+  code: string | null;
+};
+
 type ProcessResult = {
   lines: string[];
   summary: ProcessSummary;
+  processedJobs: number;
+  stopReason: "single-step" | "idle" | "cap";
+  lastProcessedResult: WorkerRunOnceResult | null;
+  iterationFailures: WorkerFailure[];
 };
 
 type ProcessStatus =
@@ -42,6 +53,7 @@ type ProcessStatus =
   | typeof JOB_STATUS.queued;
 
 type WorkerRunOnceResult = Awaited<ReturnType<Worker["runOnce"]>>;
+type InspectionModel = Awaited<ReturnType<IngestionInspector["inspectRunModel"]>>;
 
 function readPromptValue(answer: string, fallback: string): string {
   return answer.trim().length === 0 ? fallback : answer.trim();
@@ -84,16 +96,6 @@ function tallyProcessStatus(summary: ProcessSummary, status: ProcessStatus) {
   }
 }
 
-async function finalizeProcessSummary(
-  inspector: IngestionInspector,
-  runId: string,
-  summary: ProcessSummary,
-): Promise<string> {
-  const model = await inspector.inspectRunModel(runId);
-  summary.queued = model.jobs.byStatus.queued;
-  return formatProcessSummary(summary);
-}
-
 function readProcessStatus(result: WorkerRunOnceResult): ProcessStatus {
   switch (result.status) {
     case JOB_STATUS.failed:
@@ -105,62 +107,188 @@ function readProcessStatus(result: WorkerRunOnceResult): ProcessStatus {
   }
 }
 
+function readWorkerResultErrorCode(result: WorkerRunOnceResult): string | null {
+  return "errorCode" in result && typeof result.errorCode === "string"
+    ? result.errorCode
+    : null;
+}
+
 function createJobProcessLine(prefix: string, result: WorkerRunOnceResult): string {
   const status = readProcessStatus(result);
   return `${prefix} ${result.jobId} kind=${result.kind} status=${status}`;
 }
 
+function createProcessResult(input: {
+  lines: string[];
+  summary: ProcessSummary;
+  processedJobs: number;
+  stopReason: ProcessResult["stopReason"];
+  lastProcessedResult: WorkerRunOnceResult | null;
+  iterationFailures: WorkerFailure[];
+}): ProcessResult {
+  return input;
+}
+
+function collectIterationFailure(
+  failures: WorkerFailure[],
+  result: WorkerRunOnceResult,
+) {
+  if (result.processed === 0 || !("jobId" in result) || !("kind" in result)) {
+    return;
+  }
+
+  const status = readProcessStatus(result);
+  if (status === JOB_STATUS.completed) {
+    return;
+  }
+
+  const jobId = result.jobId;
+  const kind = result.kind;
+  if (!jobId || !kind) {
+    return;
+  }
+
+  failures.push({
+    jobId,
+    kind,
+    status,
+    code: readWorkerResultErrorCode(result),
+  });
+}
+
+function buildVisibleFailures(
+  iterationFailures: WorkerFailure[],
+  inspectionFailures: InspectionModel["jobs"]["details"],
+): WorkerFailure[] {
+  const failures = new Map<string, WorkerFailure>();
+
+  for (const failure of iterationFailures) {
+    failures.set(`${failure.jobId}:${failure.status}`, failure);
+  }
+
+  for (const job of inspectionFailures) {
+    if (job.status !== JOB_STATUS.failed) {
+      continue;
+    }
+
+    failures.set(`${job.id}:${JOB_STATUS.failed}`, {
+      jobId: job.id,
+      kind: job.kind,
+      status: job.status,
+      code: job.error?.code ?? null,
+    });
+  }
+
+  return [...failures.values()];
+}
+
 async function processNextJob(worker: Worker): Promise<ProcessResult> {
   const result = await worker.runOnce();
   if (result.processed === 0) {
-    return {
+    return createProcessResult({
       lines: [],
       summary: createEmptyProcessSummary(),
-    };
+      processedJobs: 0,
+      stopReason: "idle",
+      lastProcessedResult: null,
+      iterationFailures: [],
+    });
   }
 
   const summary = createEmptyProcessSummary();
+  const iterationFailures: WorkerFailure[] = [];
   const status = readProcessStatus(result);
   tallyProcessStatus(summary, status);
+  collectIterationFailure(iterationFailures, result);
 
-  return {
+  return createProcessResult({
     lines: [createJobProcessLine("process_next job", result)],
     summary,
-  };
+    processedJobs: 1,
+    stopReason: "single-step",
+    lastProcessedResult: result,
+    iterationFailures,
+  });
 }
 
 async function processUntilIdle(worker: Worker, cap: number): Promise<ProcessResult> {
   const summary = createEmptyProcessSummary();
   const lines = [`process_until_idle cap ${cap}`];
+  const iterationFailures: WorkerFailure[] = [];
   let processedJobs = 0;
+  let lastProcessedResult: WorkerRunOnceResult | null = null;
 
   while (processedJobs < cap) {
     const result = await worker.runOnce();
     if (result.processed === 0) {
       lines.push(`process_until_idle idle after ${processedJobs} jobs`);
-      return { lines, summary };
+      return createProcessResult({
+        lines,
+        summary,
+        processedJobs,
+        stopReason: "idle",
+        lastProcessedResult,
+        iterationFailures,
+      });
     }
 
     processedJobs += 1;
+    lastProcessedResult = result;
     const status = readProcessStatus(result);
     lines.push(createJobProcessLine("process job", result));
     tallyProcessStatus(summary, status);
+    collectIterationFailure(iterationFailures, result);
   }
 
   lines.push(`process_until_idle cap_reached after ${processedJobs} jobs`);
-  return { lines, summary };
+  return createProcessResult({
+    lines,
+    summary,
+    processedJobs,
+    stopReason: "cap",
+    lastProcessedResult,
+    iterationFailures,
+  });
 }
 
 async function appendProcessOutput(
   output: string[],
   inspector: IngestionInspector,
   runId: string,
+  action: string,
   result: ProcessResult,
 ) {
+  const model = await inspector.inspectRunModel(runId);
+  result.summary.queued = model.jobs.byStatus.queued;
+  const visibleFailures = buildVisibleFailures(
+    result.iterationFailures,
+    model.jobs.details,
+  );
+
   output.push("");
   output.push("Process Jobs");
+  output.push(`action ${action}`);
   output.push(...result.lines);
-  output.push(await finalizeProcessSummary(inspector, runId, result.summary));
+  output.push(formatProcessSummary(result.summary));
+  output.push(`processed jobs ${result.processedJobs}`);
+  output.push(`stop reason ${result.stopReason}`);
+  if (result.lastProcessedResult?.processed === 1) {
+    output.push(
+      `last job ${result.lastProcessedResult.kind} status=${readProcessStatus(
+        result.lastProcessedResult,
+      )}`,
+    );
+  }
+  output.push(
+    `jobs completed=${model.jobs.summary.completed} failed=${model.jobs.summary.failed} queued=${model.jobs.summary.queued} retries=${model.jobs.summary.retries}`,
+  );
+  output.push(`visible failures ${visibleFailures.length}`);
+  for (const failure of visibleFailures) {
+    const codeSuffix = failure.code ? ` code=${failure.code}` : "";
+    output.push(
+      `failure job=${failure.jobId} kind=${failure.kind} status=${failure.status}${codeSuffix}`,
+    );
+  }
 }
 
 export async function runOperatorConsole({
@@ -246,9 +374,10 @@ export async function runOperatorConsole({
     );
 
     switch (action) {
-      case "process-next": {
+      case "process-next":
+      case "process-next-job": {
         const result = await processNextJob(worker);
-        await appendProcessOutput(output, inspector, createdRun.runId, result);
+        await appendProcessOutput(output, inspector, createdRun.runId, action, result);
         break;
       }
       case "process-until-idle": {
@@ -261,7 +390,7 @@ export async function runOperatorConsole({
           "process until idle cap",
         );
         const result = await processUntilIdle(worker, cap);
-        await appendProcessOutput(output, inspector, createdRun.runId, result);
+        await appendProcessOutput(output, inspector, createdRun.runId, action, result);
         break;
       }
       case "inspect": {
