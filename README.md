@@ -40,13 +40,34 @@ pnpm test
 
 The CLI uses PGlite and requires `DATABASE_URL`. Migrations in `drizzle/` are applied automatically when a command starts.
 
-For a local persistent database:
+For local development, copy the example environment file:
 
 ```sh
-export DATABASE_URL="./.data/coincodex"
+cp .env.example .env
+mkdir -p .private
 ```
 
-For a throwaway in-memory run:
+The default value uses a persistent PGlite database under `.private/`, which is ignored by Git:
+
+```sh
+DATABASE_URL=.private/coincodex-db
+```
+
+Before running CLI commands in a shell session, export the `.env` values:
+
+```sh
+set -a
+source .env
+set +a
+```
+
+You can also set the value inline for one command:
+
+```sh
+DATABASE_URL=.private/coincodex-db pnpm exec tsx src/cli.ts run-worker
+```
+
+For a throwaway in-memory run, use:
 
 ```sh
 export DATABASE_URL="memory://coincodex-dev"
