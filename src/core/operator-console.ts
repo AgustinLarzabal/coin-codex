@@ -4,12 +4,17 @@ import { JOB_STATUS } from "./ingestion.js";
 import type { IngestionInspector } from "./inspector.js";
 import type { IngestionService } from "./ingestion-service.js";
 import { readSeedSourceFile, type SeedSourceRecord } from "./source-config.js";
-import type { Worker } from "./worker.js";
+import type { Worker, WorkerRunResult } from "./worker.js";
 
 export const DEFAULT_OPERATOR_CONSOLE_SEED_FILE = ".private/sources.json";
 const DEFAULT_SCOPE = "default";
 const DEFAULT_DETAIL_LIMIT = 10;
 const DEFAULT_PROCESS_UNTIL_IDLE_CAP = 100;
+
+type OperatorConsoleAction = "process-next" | "process-next-job" | "process-until-idle";
+type OperatorConsoleStopReason = "single-step" | "cap" | "idle";
+type InspectionFailure =
+  Awaited<ReturnType<IngestionInspector["inspectRunModel"]>>["jobs"]["details"][number];
 
 export type OperatorConsolePrompt = {
   text(input: { label: string; defaultValue?: string }): Promise<string>;
@@ -42,8 +47,8 @@ type ProcessResult = {
   lines: string[];
   summary: ProcessSummary;
   processedJobs: number;
-  stopReason: "single-step" | "idle" | "cap";
-  lastProcessedResult: WorkerRunOnceResult | null;
+  stopReason: OperatorConsoleStopReason;
+  lastProcessedResult: WorkerRunResult | null;
   iterationFailures: WorkerFailure[];
 };
 
@@ -51,9 +56,7 @@ type ProcessStatus =
   | typeof JOB_STATUS.completed
   | typeof JOB_STATUS.failed
   | typeof JOB_STATUS.queued;
-
-type WorkerRunOnceResult = Awaited<ReturnType<Worker["runOnce"]>>;
-type InspectionModel = Awaited<ReturnType<IngestionInspector["inspectRunModel"]>>;
+type ProcessedWorkerRunResult = Extract<WorkerRunResult, { processed: 1 }>;
 
 function readPromptValue(answer: string, fallback: string): string {
   return answer.trim().length === 0 ? fallback : answer.trim();
@@ -96,8 +99,9 @@ function tallyProcessStatus(summary: ProcessSummary, status: ProcessStatus) {
   }
 }
 
-function readProcessStatus(result: WorkerRunOnceResult): ProcessStatus {
-  switch (result.status) {
+function readWorkerResultStatus(result: WorkerRunResult): ProcessStatus {
+  const status = "status" in result ? result.status : undefined;
+  switch (status) {
     case JOB_STATUS.failed:
       return JOB_STATUS.failed;
     case JOB_STATUS.queued:
@@ -107,148 +111,152 @@ function readProcessStatus(result: WorkerRunOnceResult): ProcessStatus {
   }
 }
 
-function readWorkerResultErrorCode(result: WorkerRunOnceResult): string | null {
-  return "errorCode" in result && typeof result.errorCode === "string"
-    ? result.errorCode
-    : null;
-}
-
-function createJobProcessLine(prefix: string, result: WorkerRunOnceResult): string {
-  const status = readProcessStatus(result);
-  return `${prefix} ${result.jobId} kind=${result.kind} status=${status}`;
-}
-
-function createProcessResult(input: {
-  lines: string[];
-  summary: ProcessSummary;
-  processedJobs: number;
-  stopReason: ProcessResult["stopReason"];
-  lastProcessedResult: WorkerRunOnceResult | null;
-  iterationFailures: WorkerFailure[];
-}): ProcessResult {
-  return input;
-}
-
-function collectIterationFailure(
-  failures: WorkerFailure[],
-  result: WorkerRunOnceResult,
-) {
-  if (result.processed === 0 || !("jobId" in result) || !("kind" in result)) {
-    return;
+function readWorkerResultErrorCode(result: WorkerRunResult): string | null {
+  if ("errorCode" in result && typeof result.errorCode === "string") {
+    return result.errorCode;
   }
 
-  const status = readProcessStatus(result);
-  if (status === JOB_STATUS.completed) {
-    return;
+  return null;
+}
+
+function readProcessUntilIdleCap(
+  action: OperatorConsoleAction,
+  answer: string | null,
+): number {
+  if (action === "process-next" || action === "process-next-job") {
+    return 1;
   }
 
-  const jobId = result.jobId;
-  const kind = result.kind;
-  if (!jobId || !kind) {
-    return;
+  return readPositiveInteger(
+    answer ?? String(DEFAULT_PROCESS_UNTIL_IDLE_CAP),
+    DEFAULT_PROCESS_UNTIL_IDLE_CAP,
+    "process until idle cap",
+  );
+}
+
+function buildFailureKey(jobId: string, status: string): string {
+  return `${jobId}:${status}`;
+}
+
+function readVisibleFailure(job: InspectionFailure): WorkerFailure | null {
+  if (job.status !== JOB_STATUS.failed) {
+    return null;
   }
 
-  failures.push({
-    jobId,
-    kind,
-    status,
-    code: readWorkerResultErrorCode(result),
-  });
+  return {
+    jobId: job.id,
+    kind: job.kind,
+    status: job.status,
+    code: job.error?.code ?? null,
+  };
 }
 
 function buildVisibleFailures(
   iterationFailures: WorkerFailure[],
-  inspectionFailures: InspectionModel["jobs"]["details"],
+  inspectionFailures: InspectionFailure[],
 ): WorkerFailure[] {
   const failures = new Map<string, WorkerFailure>();
 
   for (const failure of iterationFailures) {
-    failures.set(`${failure.jobId}:${failure.status}`, failure);
+    failures.set(buildFailureKey(failure.jobId, failure.status), failure);
   }
 
   for (const job of inspectionFailures) {
-    if (job.status !== JOB_STATUS.failed) {
+    const failure = readVisibleFailure(job);
+    if (!failure) {
       continue;
     }
 
-    failures.set(`${job.id}:${JOB_STATUS.failed}`, {
-      jobId: job.id,
-      kind: job.kind,
-      status: job.status,
-      code: job.error?.code ?? null,
-    });
+    failures.set(buildFailureKey(failure.jobId, failure.status), failure);
   }
 
   return [...failures.values()];
 }
 
-async function processNextJob(worker: Worker): Promise<ProcessResult> {
-  const result = await worker.runOnce();
+function createJobProcessLine(
+  prefix: string,
+  result: ProcessedWorkerRunResult,
+): string {
+  const status = readWorkerResultStatus(result);
+  return `${prefix} ${result.jobId} kind=${result.kind} status=${status}`;
+}
+
+function collectIterationFailure(
+  failures: WorkerFailure[],
+  result: WorkerRunResult,
+) {
   if (result.processed === 0) {
-    return createProcessResult({
-      lines: [],
-      summary: createEmptyProcessSummary(),
-      processedJobs: 0,
-      stopReason: "idle",
-      lastProcessedResult: null,
-      iterationFailures: [],
-    });
+    return;
   }
 
-  const summary = createEmptyProcessSummary();
-  const iterationFailures: WorkerFailure[] = [];
-  const status = readProcessStatus(result);
-  tallyProcessStatus(summary, status);
-  collectIterationFailure(iterationFailures, result);
+  const status = readWorkerResultStatus(result);
+  if (status === JOB_STATUS.completed) {
+    return;
+  }
 
-  return createProcessResult({
-    lines: [createJobProcessLine("process_next job", result)],
-    summary,
-    processedJobs: 1,
-    stopReason: "single-step",
-    lastProcessedResult: result,
-    iterationFailures,
+  failures.push({
+    jobId: result.jobId,
+    kind: result.kind,
+    status,
+    code: readWorkerResultErrorCode(result),
   });
 }
 
-async function processUntilIdle(worker: Worker, cap: number): Promise<ProcessResult> {
+async function runWorkerAction(
+  action: OperatorConsoleAction,
+  worker: Worker,
+  capAnswer: string | null,
+): Promise<ProcessResult> {
+  const cap = readProcessUntilIdleCap(action, capAnswer);
   const summary = createEmptyProcessSummary();
-  const lines = [`process_until_idle cap ${cap}`];
+  const lines =
+    action === "process-until-idle" ? [`process_until_idle cap ${cap}`] : [];
   const iterationFailures: WorkerFailure[] = [];
   let processedJobs = 0;
-  let lastProcessedResult: WorkerRunOnceResult | null = null;
+  let stopReason: OperatorConsoleStopReason =
+    action === "process-until-idle" ? "cap" : "single-step";
+  let lastProcessedResult: WorkerRunResult | null = null;
 
-  while (processedJobs < cap) {
+  for (let index = 0; index < cap; index += 1) {
     const result = await worker.runOnce();
+
     if (result.processed === 0) {
-      lines.push(`process_until_idle idle after ${processedJobs} jobs`);
-      return createProcessResult({
-        lines,
-        summary,
-        processedJobs,
-        stopReason: "idle",
-        lastProcessedResult,
-        iterationFailures,
-      });
+      stopReason = "idle";
+      if (action === "process-until-idle") {
+        lines.push(`process_until_idle idle after ${processedJobs} jobs`);
+      }
+      break;
     }
 
     processedJobs += 1;
     lastProcessedResult = result;
-    const status = readProcessStatus(result);
-    lines.push(createJobProcessLine("process job", result));
+    const status = readWorkerResultStatus(result);
     tallyProcessStatus(summary, status);
     collectIterationFailure(iterationFailures, result);
+    lines.push(
+      createJobProcessLine(
+        action === "process-until-idle" ? "process job" : "process_next job",
+        result,
+      ),
+    );
+
+    if (action === "process-next" || action === "process-next-job") {
+      break;
+    }
   }
 
-  lines.push(`process_until_idle cap_reached after ${processedJobs} jobs`);
-  return createProcessResult({
+  if (action === "process-until-idle" && stopReason === "cap") {
+    lines.push(`process_until_idle cap_reached after ${processedJobs} jobs`);
+  }
+
+  return {
     lines,
     summary,
     processedJobs,
-    stopReason: "cap",
+    stopReason,
     lastProcessedResult,
     iterationFailures,
-  });
+  };
 }
 
 async function appendProcessOutput(
@@ -274,7 +282,7 @@ async function appendProcessOutput(
   output.push(`stop reason ${result.stopReason}`);
   if (result.lastProcessedResult?.processed === 1) {
     output.push(
-      `last job ${result.lastProcessedResult.kind} status=${readProcessStatus(
+      `last job ${result.lastProcessedResult.kind} status=${readWorkerResultStatus(
         result.lastProcessedResult,
       )}`,
     );
@@ -376,20 +384,16 @@ export async function runOperatorConsole({
     switch (action) {
       case "process-next":
       case "process-next-job": {
-        const result = await processNextJob(worker);
+        const result = await runWorkerAction(action, worker, null);
         await appendProcessOutput(output, inspector, createdRun.runId, action, result);
         break;
       }
       case "process-until-idle": {
-        const cap = readPositiveInteger(
-          await prompt.text({
-            label: "Process until idle cap",
-            defaultValue: String(DEFAULT_PROCESS_UNTIL_IDLE_CAP),
-          }),
-          DEFAULT_PROCESS_UNTIL_IDLE_CAP,
-          "process until idle cap",
-        );
-        const result = await processUntilIdle(worker, cap);
+        const capAnswer = await prompt.text({
+          label: "Process until idle cap",
+          defaultValue: String(DEFAULT_PROCESS_UNTIL_IDLE_CAP),
+        });
+        const result = await runWorkerAction(action, worker, capAnswer);
         await appendProcessOutput(output, inspector, createdRun.runId, action, result);
         break;
       }

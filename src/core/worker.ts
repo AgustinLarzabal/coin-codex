@@ -56,6 +56,17 @@ type RawSourcePageRecord = typeof rawSourcePages.$inferSelect;
 type AcceptedCoinRecord = typeof acceptedCoins.$inferSelect;
 type AcceptedCoinImageRecord = typeof acceptedCoinImages.$inferSelect;
 
+export type WorkerRunResult =
+  | { processed: 0 }
+  | {
+      processed: 1;
+      jobId: string;
+      runId: string;
+      kind: string;
+      status?: string;
+      errorCode?: string | null;
+    };
+
 function sha256(input: string): string {
   return createHash("sha256").update(input).digest("hex");
 }
@@ -581,7 +592,7 @@ export class Worker {
     return acceptedCoinImage;
   }
 
-  async runOnce() {
+  async runOnce(): Promise<WorkerRunResult> {
     const now = new Date();
     const [job] = await this.db
       .select()
