@@ -173,33 +173,38 @@ function buildVisibleFailures(
   return [...failures.values()];
 }
 
-function createJobProcessLine(
-  prefix: string,
-  result: ProcessedWorkerRunResult,
-): string {
-  const status = readWorkerResultStatus(result);
-  return `${prefix} ${result.jobId} kind=${result.kind} status=${status}`;
+function appendSourcePrivateLines(
+  lines: string[],
+  sourcePrivate: CrawlRunInspectionModel["source"]["private"],
+): void {
+  if (!sourcePrivate) {
+    return;
+  }
+
+  if (sourcePrivate.name) {
+    lines.push(`source_name ${sourcePrivate.name}`);
+  }
+  if (sourcePrivate.domain) {
+    lines.push(`source_domain ${sourcePrivate.domain}`);
+  }
+  lines.push(`start_url ${sourcePrivate.startUrl}`);
 }
 
-function collectIterationFailure(
-  failures: WorkerFailure[],
-  result: WorkerRunResult,
-) {
-  if (result.processed === 0) {
-    return;
+function appendJobPrivateLines(
+  lines: string[],
+  jobs: CrawlRunInspectionModel["jobs"]["details"],
+): void {
+  for (const job of jobs) {
+    if (job.page?.private?.title) {
+      lines.push(`title ${job.page.private.title}`);
+    }
+    if (job.page?.private?.normalizedUrl) {
+      lines.push(`url ${job.page.private.normalizedUrl}`);
+    }
+    if (job.error?.private) {
+      lines.push(`error_private ${JSON.stringify(job.error.private)}`);
+    }
   }
-
-  const status = readWorkerResultStatus(result);
-  if (status === JOB_STATUS.completed) {
-    return;
-  }
-
-  failures.push({
-    jobId: result.jobId,
-    kind: result.kind,
-    status,
-    code: readWorkerResultErrorCode(result),
-  });
 }
 
 function renderOperatorConsoleInspection(
@@ -228,35 +233,46 @@ function renderOperatorConsoleInspection(
     );
   }
 
-  if (model.source.private) {
-    if (model.source.private.name) {
-      lines.push(`source_name ${model.source.private.name}`);
-    }
-    if (model.source.private.domain) {
-      lines.push(`source_domain ${model.source.private.domain}`);
-    }
-    lines.push(`start_url ${model.source.private.startUrl}`);
-  }
+  appendSourcePrivateLines(lines, model.source.private);
 
   for (const candidate of model.quarantinedCandidates) {
     lines.push(`quarantine_reason ${candidate.reason ?? "unknown"}`);
   }
 
   if (debugPrivate) {
-    for (const job of model.jobs.details) {
-      if (job.page?.private?.title) {
-        lines.push(`title ${job.page.private.title}`);
-      }
-      if (job.page?.private?.normalizedUrl) {
-        lines.push(`url ${job.page.private.normalizedUrl}`);
-      }
-      if (job.error?.private) {
-        lines.push(`error_private ${JSON.stringify(job.error.private)}`);
-      }
-    }
+    appendJobPrivateLines(lines, model.jobs.details);
   }
 
   return lines;
+}
+
+function createJobProcessLine(
+  prefix: string,
+  result: ProcessedWorkerRunResult,
+): string {
+  const status = readWorkerResultStatus(result);
+  return `${prefix} ${result.jobId} kind=${result.kind} status=${status}`;
+}
+
+function collectIterationFailure(
+  failures: WorkerFailure[],
+  result: WorkerRunResult,
+) {
+  if (result.processed === 0) {
+    return;
+  }
+
+  const status = readWorkerResultStatus(result);
+  if (status === JOB_STATUS.completed) {
+    return;
+  }
+
+  failures.push({
+    jobId: result.jobId,
+    kind: result.kind,
+    status,
+    code: readWorkerResultErrorCode(result),
+  });
 }
 
 async function runWorkerAction(
