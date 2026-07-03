@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { JOB_STATUS } from "./ingestion.js";
 import type { IngestionInspector } from "./inspector.js";
 import type { IngestionService } from "./ingestion-service.js";
 import type { Worker } from "./worker.js";
@@ -30,6 +31,18 @@ type ProcessSummary = {
   queued: number;
 };
 
+type ProcessResult = {
+  lines: string[];
+  summary: ProcessSummary;
+};
+
+type ProcessStatus =
+  | typeof JOB_STATUS.completed
+  | typeof JOB_STATUS.failed
+  | typeof JOB_STATUS.queued;
+
+type WorkerRunOnceResult = Awaited<ReturnType<Worker["runOnce"]>>;
+
 function readPromptValue(answer: string, fallback: string): string {
   return answer.trim().length === 0 ? fallback : answer.trim();
 }
@@ -57,65 +70,66 @@ function formatProcessSummary(summary: ProcessSummary): string {
   return `processing_summary completed=${summary.completed} failed=${summary.failed} retried=${summary.retried} queued=${summary.queued}`;
 }
 
-function tallyProcessStatus(summary: ProcessSummary, status: string) {
-  if (status === "failed") {
-    summary.failed += 1;
-    return;
+function tallyProcessStatus(summary: ProcessSummary, status: ProcessStatus) {
+  switch (status) {
+    case JOB_STATUS.failed:
+      summary.failed += 1;
+      break;
+    case JOB_STATUS.queued:
+      summary.retried += 1;
+      break;
+    case JOB_STATUS.completed:
+      summary.completed += 1;
+      break;
   }
-
-  if (status === "queued") {
-    summary.retried += 1;
-    return;
-  }
-
-  summary.completed += 1;
 }
 
-async function finalizeProcessLines(
+async function finalizeProcessSummary(
   inspector: IngestionInspector,
   runId: string,
-  result: {
-    lines: string[];
-    summary: ProcessSummary;
-  },
-) {
+  summary: ProcessSummary,
+): Promise<string> {
   const model = await inspector.inspectRunModel(runId);
-  result.summary.queued = model.jobs.byStatus.queued;
-  result.lines[result.lines.length - 1] = formatProcessSummary(result.summary);
+  summary.queued = model.jobs.byStatus.queued;
+  return formatProcessSummary(summary);
 }
 
-async function processNextJob(worker: Worker): Promise<{
-  lines: string[];
-  summary: ProcessSummary;
-}> {
+function readProcessStatus(result: WorkerRunOnceResult): ProcessStatus {
+  switch (result.status) {
+    case JOB_STATUS.failed:
+      return JOB_STATUS.failed;
+    case JOB_STATUS.queued:
+      return JOB_STATUS.queued;
+    default:
+      return JOB_STATUS.completed;
+  }
+}
+
+function createJobProcessLine(prefix: string, result: WorkerRunOnceResult): string {
+  const status = readProcessStatus(result);
+  return `${prefix} ${result.jobId} kind=${result.kind} status=${status}`;
+}
+
+async function processNextJob(worker: Worker): Promise<ProcessResult> {
   const result = await worker.runOnce();
   if (result.processed === 0) {
     return {
-      lines: ["process_next idle"],
+      lines: [],
       summary: createEmptyProcessSummary(),
     };
   }
 
   const summary = createEmptyProcessSummary();
-  const status = result.status ?? "completed";
+  const status = readProcessStatus(result);
   tallyProcessStatus(summary, status);
 
   return {
-    lines: [
-      `process_next job ${result.jobId} kind=${result.kind} status=${status}`,
-      formatProcessSummary(summary),
-    ],
+    lines: [createJobProcessLine("process_next job", result)],
     summary,
   };
 }
 
-async function processUntilIdle(
-  worker: Worker,
-  cap: number,
-): Promise<{
-  lines: string[];
-  summary: ProcessSummary;
-}> {
+async function processUntilIdle(worker: Worker, cap: number): Promise<ProcessResult> {
   const summary = createEmptyProcessSummary();
   const lines = [`process_until_idle cap ${cap}`];
   let processedJobs = 0;
@@ -124,19 +138,29 @@ async function processUntilIdle(
     const result = await worker.runOnce();
     if (result.processed === 0) {
       lines.push(`process_until_idle idle after ${processedJobs} jobs`);
-      lines.push(formatProcessSummary(summary));
       return { lines, summary };
     }
 
     processedJobs += 1;
-    const status = result.status ?? "completed";
-    lines.push(`process job ${result.jobId} kind=${result.kind} status=${status}`);
+    const status = readProcessStatus(result);
+    lines.push(createJobProcessLine("process job", result));
     tallyProcessStatus(summary, status);
   }
 
   lines.push(`process_until_idle cap_reached after ${processedJobs} jobs`);
-  lines.push(formatProcessSummary(summary));
   return { lines, summary };
+}
+
+async function appendProcessOutput(
+  output: string[],
+  inspector: IngestionInspector,
+  runId: string,
+  result: ProcessResult,
+) {
+  output.push("");
+  output.push("Process Jobs");
+  output.push(...result.lines);
+  output.push(await finalizeProcessSummary(inspector, runId, result.summary));
 }
 
 export async function runOperatorConsole({
@@ -223,11 +247,8 @@ export async function runOperatorConsole({
 
     switch (action) {
       case "process-next": {
-        output.push("");
-        output.push("Process Jobs");
         const result = await processNextJob(worker);
-        await finalizeProcessLines(inspector, createdRun.runId, result);
-        output.push(...result.lines);
+        await appendProcessOutput(output, inspector, createdRun.runId, result);
         break;
       }
       case "process-until-idle": {
@@ -239,11 +260,8 @@ export async function runOperatorConsole({
           DEFAULT_PROCESS_UNTIL_IDLE_CAP,
           "process until idle cap",
         );
-        output.push("");
-        output.push("Process Jobs");
         const result = await processUntilIdle(worker, cap);
-        await finalizeProcessLines(inspector, createdRun.runId, result);
-        output.push(...result.lines);
+        await appendProcessOutput(output, inspector, createdRun.runId, result);
         break;
       }
       case "inspect": {
