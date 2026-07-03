@@ -397,6 +397,8 @@ describe("CLI ingestion skeleton", () => {
     expect(inspections[1]).toContain("source_name Private Source Name");
     expect(inspections[1]).toContain("source_domain private.example.test");
     expect(inspections[1]).toContain("start_url https://private.example.test/coins");
+    expect(inspections[1]).toContain("error_private");
+    expect(inspections[1]).toContain("IMAGE_TIMEOUT");
   });
 
   it("fails operator console seeding visibly before creating a run when the seed file is invalid", async () => {

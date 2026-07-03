@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { JOB_STATUS } from "./ingestion.js";
-import type { IngestionInspector } from "./inspector.js";
+import type { CrawlRunInspectionModel, IngestionInspector } from "./inspector.js";
 import type { IngestionService } from "./ingestion-service.js";
 import { readSeedSourceFile, type SeedSourceRecord } from "./source-config.js";
 import type { Worker, WorkerRunResult } from "./worker.js";
@@ -202,6 +202,63 @@ function collectIterationFailure(
   });
 }
 
+function renderOperatorConsoleInspection(
+  model: CrawlRunInspectionModel,
+  debugPrivate: boolean,
+): string[] {
+  const lines = [
+    "Inspect Active Run",
+    `private debug ${debugPrivate ? "on" : "off"}`,
+    `run ${model.run.id}`,
+    `source ${model.run.sourceId}`,
+    `status ${model.run.status}`,
+    `jobs total=${model.jobs.total} completed=${model.jobs.summary.completed} failed=${model.jobs.summary.failed} queued=${model.jobs.summary.queued} running=${model.jobs.summary.running} retries=${model.jobs.summary.retries}`,
+    `job_status queued=${model.jobs.byStatus.queued} running=${model.jobs.byStatus.running}`,
+    `raw_pages total=${model.rawPages.total} listing=${model.rawPages.byType.listing} detail=${model.rawPages.byType.detail} unknown=${model.rawPages.byType.unknown}`,
+    `candidates total=${model.candidates.total} accepted=${model.candidates.accepted} quarantined=${model.candidates.quarantined}`,
+    `accepted_coins ${model.acceptedCoins.total}`,
+    `quarantined_candidates ${model.candidates.quarantined}`,
+    `accepted_coin_images ${model.acceptedCoinImages.total}`,
+    `failures total=${model.jobs.failureCount}`,
+  ];
+
+  if (model.cursor) {
+    lines.push(
+      `cursor next_detail_index=${model.cursor.nextDetailIndex} total_detail_links=${model.cursor.totalDetailLinks}`,
+    );
+  }
+
+  if (model.source.private) {
+    if (model.source.private.name) {
+      lines.push(`source_name ${model.source.private.name}`);
+    }
+    if (model.source.private.domain) {
+      lines.push(`source_domain ${model.source.private.domain}`);
+    }
+    lines.push(`start_url ${model.source.private.startUrl}`);
+  }
+
+  for (const candidate of model.quarantinedCandidates) {
+    lines.push(`quarantine_reason ${candidate.reason ?? "unknown"}`);
+  }
+
+  if (debugPrivate) {
+    for (const job of model.jobs.details) {
+      if (job.page?.private?.title) {
+        lines.push(`title ${job.page.private.title}`);
+      }
+      if (job.page?.private?.normalizedUrl) {
+        lines.push(`url ${job.page.private.normalizedUrl}`);
+      }
+      if (job.error?.private) {
+        lines.push(`error_private ${JSON.stringify(job.error.private)}`);
+      }
+    }
+  }
+
+  return lines;
+}
+
 async function runWorkerAction(
   action: OperatorConsoleAction,
   worker: Worker,
@@ -398,13 +455,12 @@ export async function runOperatorConsole({
         break;
       }
       case "inspect": {
+        const model = await inspector.inspectRunModel(createdRun.runId, {
+          debugPrivate,
+        });
         output.push("");
         output.push("Inspect Results");
-        output.push(
-          await inspector.inspectRun(createdRun.runId, {
-            debugPrivate,
-          }),
-        );
+        output.push(...renderOperatorConsoleInspection(model, debugPrivate));
         break;
       }
       case "toggle-debug": {
