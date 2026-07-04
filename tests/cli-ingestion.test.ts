@@ -20,6 +20,7 @@ import type {
   OperatorConsolePrompt,
   OperatorConsolePromptInput,
 } from "../src/core/operator-console.js";
+import { OPERATOR_CONSOLE_ACTION_OPTIONS } from "../src/core/operator-console.js";
 import {
   ImageProviderError,
   type ImageProvider,
@@ -46,17 +47,10 @@ const FIXTURE_RUN_SOURCE_CONFIG = {
   domain: "private.example.test",
   startUrl: "https://private.example.test/coins",
 } satisfies TestSourceConfig;
-const ACTION_PROMPT_OPTIONS = [
-  "process-next-job",
-  "process-until-idle",
-  "inspect",
-  "toggle-debug",
-  "exit",
-] as const;
 const DEFAULT_ACTION_PROMPT_INPUT = {
   label: "Action",
   defaultValue: "exit",
-  options: ACTION_PROMPT_OPTIONS,
+  options: OPERATOR_CONSOLE_ACTION_OPTIONS,
 } satisfies OperatorConsolePromptInput;
 
 function createStubOperatorConsolePrompt(
