@@ -190,6 +190,12 @@ Seed Sources -> Create Crawl Run -> Process Jobs -> Inspect Results
 
 By default, the console seeds from `.private/sources.json`, which matches the local private workspace convention. Use `--seed-file` to override that path when you want to test a different source configuration.
 
+Finite-choice prompts show available typed options inline after the default so operators can see the exact accepted values without leaving the compact readline flow. For example:
+
+```text
+Action [exit] (options: process-next-job, process-until-idle, inspect, toggle-debug, exit):
+```
+
 The console is a guided interface over the same ingestion services as the non-interactive CLI. The existing non-interactive CLI commands remain available for scripts, tests, and direct debugging:
 
 - `seed-sources` seeds source configuration
