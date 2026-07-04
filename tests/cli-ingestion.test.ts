@@ -378,6 +378,77 @@ describe("CLI ingestion skeleton", () => {
     });
   });
 
+  it("passes option metadata only to finite-choice operator console prompts", async () => {
+    const { databaseUrl } = await createDatabaseUrl();
+    const sourceConfigPath = await writeSeedSourceFile({
+      adapter: "fake",
+      fixtureId: "fixture-run",
+      name: "Private Source Name",
+      domain: "private.example.test",
+      startUrl: "https://private.example.test/coins",
+    });
+    const { prompt, inputs } = createCapturingOperatorConsolePrompt([
+      "",
+      "",
+      "console_scope",
+      "10",
+      "process-until-idle",
+      "",
+      "exit",
+    ]);
+
+    await executeCli(["operator-console", "--seed-file", sourceConfigPath], {
+      databaseUrl,
+      operatorConsolePrompt: prompt,
+    });
+
+    expect(inputs).toEqual([
+      {
+        label: "Seed file path",
+        defaultValue: sourceConfigPath,
+      },
+      {
+        label: "Source id",
+        defaultValue: SEEDED_SOURCE_ID,
+        options: [SEEDED_SOURCE_ID],
+      },
+      {
+        label: "Scope",
+        defaultValue: "default",
+      },
+      {
+        label: "Detail limit",
+        defaultValue: "10",
+      },
+      {
+        label: "Action",
+        defaultValue: "exit",
+        options: [
+          "process-next-job",
+          "process-until-idle",
+          "inspect",
+          "toggle-debug",
+          "exit",
+        ],
+      },
+      {
+        label: "Process until idle cap",
+        defaultValue: "100",
+      },
+      {
+        label: "Action",
+        defaultValue: "exit",
+        options: [
+          "process-next-job",
+          "process-until-idle",
+          "inspect",
+          "toggle-debug",
+          "exit",
+        ],
+      },
+    ]);
+  });
+
   it("stops process-until-idle at the requested cap and reports queued work that remains", async () => {
     const { databaseUrl, db } = await createDatabaseUrl();
     const imageProviderFactory = createStubImageProviderFactory();
