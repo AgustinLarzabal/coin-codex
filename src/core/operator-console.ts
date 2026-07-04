@@ -426,6 +426,7 @@ export async function runOperatorConsole({
     await prompt.text({
       label: "Source id",
       defaultValue: seeded.sourceIds[0],
+      options: seeded.sourceIds,
     }),
     seeded.sourceIds[0],
   );
