@@ -10,6 +10,13 @@ export const DEFAULT_OPERATOR_CONSOLE_SEED_FILE = ".private/sources.json";
 const DEFAULT_SCOPE = "default";
 const DEFAULT_DETAIL_LIMIT = 10;
 const DEFAULT_PROCESS_UNTIL_IDLE_CAP = 100;
+const ACTION_OPTIONS = [
+  "process-next-job",
+  "process-until-idle",
+  "inspect",
+  "toggle-debug",
+  "exit",
+] as const;
 
 type OperatorConsoleAction = "process-next" | "process-next-job" | "process-until-idle";
 type OperatorConsoleStopReason = "single-step" | "cap" | "idle";
@@ -17,7 +24,11 @@ type InspectionFailure =
   Awaited<ReturnType<IngestionInspector["inspectRunModel"]>>["jobs"]["details"][number];
 
 export type OperatorConsolePrompt = {
-  text(input: { label: string; defaultValue?: string }): Promise<string>;
+  text(input: {
+    label: string;
+    defaultValue?: string;
+    options?: string[];
+  }): Promise<string>;
   close?: () => Promise<void> | void;
 };
 
@@ -450,6 +461,7 @@ export async function runOperatorConsole({
       await prompt.text({
         label: "Action",
         defaultValue: "exit",
+        options: [...ACTION_OPTIONS],
       }),
       "exit",
     );

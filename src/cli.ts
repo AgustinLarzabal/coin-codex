@@ -22,6 +22,20 @@ type CliDeps = {
   operatorConsolePrompt?: OperatorConsolePrompt;
 };
 
+export function formatOperatorConsolePrompt(input: {
+  label: string;
+  defaultValue?: string;
+  options?: string[];
+}): string {
+  const defaultSuffix = input.defaultValue ? ` [${input.defaultValue}]` : "";
+  const optionsSuffix =
+    input.options && input.options.length > 0
+      ? ` (options: ${input.options.join(", ")})`
+      : "";
+
+  return `${input.label}${defaultSuffix}${optionsSuffix}: `;
+}
+
 function readFlag(args: string[], name: string): string | undefined {
   const index = args.indexOf(name);
   if (index === -1) {
@@ -61,9 +75,8 @@ function createReadlineOperatorConsolePrompt(): OperatorConsolePrompt {
   });
 
   return {
-    async text({ label, defaultValue }) {
-      const suffix = defaultValue ? ` [${defaultValue}]` : "";
-      return readline.question(`${label}${suffix}: `);
+    async text(input) {
+      return readline.question(formatOperatorConsolePrompt(input));
     },
     async close() {
       readline.close();

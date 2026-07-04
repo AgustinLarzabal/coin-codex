@@ -8,7 +8,7 @@ import { PGlite } from "@electric-sql/pglite";
 import { asc, eq } from "drizzle-orm";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { executeCli } from "../src/cli.js";
+import { executeCli, formatOperatorConsolePrompt } from "../src/cli.js";
 import {
   ACCEPT_COIN_CANDIDATE_JOB_KIND,
   DOWNLOAD_ACCEPTED_COIN_IMAGE_JOB_KIND,
@@ -36,6 +36,7 @@ import { createDatabase, registerDatabase, unregisterDatabase } from "../src/db/
 const resources: Array<{ databaseUrl: string; close: () => Promise<void> }> = [];
 const filesystemResources: Array<{ path: string }> = [];
 const SEEDED_SOURCE_ID = "src_test_opaque";
+type PromptInput = { label: string; defaultValue?: string; options?: string[] };
 
 function createStubOperatorConsolePrompt(
   answers: string[],
@@ -49,6 +50,22 @@ function createStubOperatorConsolePrompt(
       return answer ?? "";
     },
   };
+}
+
+function createCapturingOperatorConsolePrompt(answers: string[]) {
+  const inputs: PromptInput[] = [];
+  let answerIndex = 0;
+
+  const prompt: OperatorConsolePrompt = {
+    async text(input) {
+      inputs.push(input);
+      const answer = answers[answerIndex];
+      answerIndex += 1;
+      return answer ?? "";
+    },
+  };
+
+  return { prompt, inputs };
 }
 
 type StubImageProviderOptions = {
@@ -165,6 +182,24 @@ afterEach(async () => {
 });
 
 describe("CLI ingestion skeleton", () => {
+  it("formats readline prompt defaults before inline options", () => {
+    expect(
+      formatOperatorConsolePrompt({
+        label: "Action",
+        defaultValue: "exit",
+        options: [
+          "process-next-job",
+          "process-until-idle",
+          "inspect",
+          "toggle-debug",
+          "exit",
+        ],
+      }),
+    ).toBe(
+      "Action [exit] (options: process-next-job, process-until-idle, inspect, toggle-debug, exit): ",
+    );
+  });
+
   it("launches the operator console seed and create-run workflow with the default seed path", async () => {
     const { databaseUrl, db } = await createDatabaseUrl();
     const privateDir = path.join(process.cwd(), ".private");
@@ -304,6 +339,41 @@ describe("CLI ingestion skeleton", () => {
       JOB_STATUS.queued,
       JOB_STATUS.queued,
     ]);
+  });
+
+  it("passes inline action options without exposing the legacy process-next alias", async () => {
+    const { databaseUrl } = await createDatabaseUrl();
+    const sourceConfigPath = await writeSeedSourceFile({
+      adapter: "fake",
+      fixtureId: "fixture-run",
+      name: "Private Source Name",
+      domain: "private.example.test",
+      startUrl: "https://private.example.test/coins",
+    });
+    const { prompt, inputs } = createCapturingOperatorConsolePrompt([
+      "",
+      SEEDED_SOURCE_ID,
+      "console_scope",
+      "10",
+      "exit",
+    ]);
+
+    await executeCli(["operator-console", "--seed-file", sourceConfigPath], {
+      databaseUrl,
+      operatorConsolePrompt: prompt,
+    });
+
+    expect(inputs.find((input) => input.label === "Action")).toEqual({
+      label: "Action",
+      defaultValue: "exit",
+      options: [
+        "process-next-job",
+        "process-until-idle",
+        "inspect",
+        "toggle-debug",
+        "exit",
+      ],
+    });
   });
 
   it("stops process-until-idle at the requested cap and reports queued work that remains", async () => {
