@@ -23,12 +23,14 @@ type OperatorConsoleStopReason = "single-step" | "cap" | "idle";
 type InspectionFailure =
   Awaited<ReturnType<IngestionInspector["inspectRunModel"]>>["jobs"]["details"][number];
 
+export type OperatorConsolePromptInput = {
+  label: string;
+  defaultValue?: string;
+  options?: readonly string[];
+};
+
 export type OperatorConsolePrompt = {
-  text(input: {
-    label: string;
-    defaultValue?: string;
-    options?: string[];
-  }): Promise<string>;
+  text(input: OperatorConsolePromptInput): Promise<string>;
   close?: () => Promise<void> | void;
 };
 
@@ -461,7 +463,7 @@ export async function runOperatorConsole({
       await prompt.text({
         label: "Action",
         defaultValue: "exit",
-        options: [...ACTION_OPTIONS],
+        options: ACTION_OPTIONS,
       }),
       "exit",
     );

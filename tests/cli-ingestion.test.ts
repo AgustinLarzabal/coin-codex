@@ -16,7 +16,10 @@ import {
   FETCH_RAW_SOURCE_PAGE_JOB_KIND,
   JOB_STATUS,
 } from "../src/core/ingestion.js";
-import type { OperatorConsolePrompt } from "../src/core/operator-console.js";
+import type {
+  OperatorConsolePrompt,
+  OperatorConsolePromptInput,
+} from "../src/core/operator-console.js";
 import {
   ImageProviderError,
   type ImageProvider,
@@ -36,7 +39,6 @@ import { createDatabase, registerDatabase, unregisterDatabase } from "../src/db/
 const resources: Array<{ databaseUrl: string; close: () => Promise<void> }> = [];
 const filesystemResources: Array<{ path: string }> = [];
 const SEEDED_SOURCE_ID = "src_test_opaque";
-type PromptInput = { label: string; defaultValue?: string; options?: string[] };
 
 function createStubOperatorConsolePrompt(
   answers: string[],
@@ -53,7 +55,7 @@ function createStubOperatorConsolePrompt(
 }
 
 function createCapturingOperatorConsolePrompt(answers: string[]) {
-  const inputs: PromptInput[] = [];
+  const inputs: OperatorConsolePromptInput[] = [];
   let answerIndex = 0;
 
   const prompt: OperatorConsolePrompt = {

@@ -7,6 +7,7 @@ import {
   DEFAULT_OPERATOR_CONSOLE_SEED_FILE,
   runOperatorConsole,
   type OperatorConsolePrompt,
+  type OperatorConsolePromptInput,
 } from "./core/operator-console.js";
 import type { FirecrawlClient } from "./core/providers/firecrawl-provider.js";
 import type { ImageProvider } from "./core/providers/image-provider.js";
@@ -22,18 +23,18 @@ type CliDeps = {
   operatorConsolePrompt?: OperatorConsolePrompt;
 };
 
-export function formatOperatorConsolePrompt(input: {
-  label: string;
-  defaultValue?: string;
-  options?: string[];
-}): string {
-  const defaultSuffix = input.defaultValue ? ` [${input.defaultValue}]` : "";
-  const optionsSuffix =
-    input.options && input.options.length > 0
-      ? ` (options: ${input.options.join(", ")})`
-      : "";
+export function formatOperatorConsolePrompt(input: OperatorConsolePromptInput): string {
+  let prompt = input.label;
 
-  return `${input.label}${defaultSuffix}${optionsSuffix}: `;
+  if (input.defaultValue) {
+    prompt += ` [${input.defaultValue}]`;
+  }
+
+  if (input.options && input.options.length > 0) {
+    prompt += ` (options: ${input.options.join(", ")})`;
+  }
+
+  return `${prompt}: `;
 }
 
 function readFlag(args: string[], name: string): string | undefined {
