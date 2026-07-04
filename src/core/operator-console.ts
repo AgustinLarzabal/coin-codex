@@ -17,8 +17,12 @@ const ACTION_OPTIONS = [
   "toggle-debug",
   "exit",
 ] as const;
+const DEFAULT_ACTION = "exit";
+const LEGACY_PROCESS_NEXT_ACTION = "process-next";
 
-type OperatorConsoleAction = "process-next" | "process-next-job" | "process-until-idle";
+type OperatorConsolePromptAction = (typeof ACTION_OPTIONS)[number];
+type OperatorConsoleWorkerAction = "process-next-job" | "process-until-idle";
+type OperatorConsoleAction = OperatorConsolePromptAction | typeof LEGACY_PROCESS_NEXT_ACTION;
 type OperatorConsoleStopReason = "single-step" | "cap" | "idle";
 type InspectionFailure =
   Awaited<ReturnType<IngestionInspector["inspectRunModel"]>>["jobs"]["details"][number];
@@ -136,7 +140,7 @@ function readProcessUntilIdleCap(
   action: OperatorConsoleAction,
   answer: string | null,
 ): number {
-  if (action === "process-next" || action === "process-next-job") {
+  if (isSingleStepAction(action)) {
     return 1;
   }
 
@@ -149,6 +153,16 @@ function readProcessUntilIdleCap(
 
 function buildFailureKey(jobId: string, status: string): string {
   return `${jobId}:${status}`;
+}
+
+function isSingleStepAction(
+  action: OperatorConsoleAction,
+): action is typeof LEGACY_PROCESS_NEXT_ACTION | "process-next-job" {
+  return action === LEGACY_PROCESS_NEXT_ACTION || action === "process-next-job";
+}
+
+function readProcessLinePrefix(action: OperatorConsoleAction): string {
+  return action === "process-until-idle" ? "process job" : "process_next job";
 }
 
 function readVisibleFailure(job: InspectionFailure): WorkerFailure | null {
@@ -319,14 +333,9 @@ async function runWorkerAction(
     const status = readWorkerResultStatus(result);
     tallyProcessStatus(summary, status);
     collectIterationFailure(iterationFailures, result);
-    lines.push(
-      createJobProcessLine(
-        action === "process-until-idle" ? "process job" : "process_next job",
-        result,
-      ),
-    );
+    lines.push(createJobProcessLine(readProcessLinePrefix(action), result));
 
-    if (action === "process-next" || action === "process-next-job") {
+    if (isSingleStepAction(action)) {
       break;
     }
   }
@@ -349,7 +358,7 @@ async function appendProcessOutput(
   output: string[],
   inspector: IngestionInspector,
   runId: string,
-  action: string,
+  action: OperatorConsoleAction,
   result: ProcessResult,
 ) {
   const model = await inspector.inspectRunModel(runId);
@@ -463,14 +472,14 @@ export async function runOperatorConsole({
     const action = readPromptValue(
       await prompt.text({
         label: "Action",
-        defaultValue: "exit",
+        defaultValue: DEFAULT_ACTION,
         options: ACTION_OPTIONS,
       }),
-      "exit",
+      DEFAULT_ACTION,
     );
 
     switch (action) {
-      case "process-next":
+      case LEGACY_PROCESS_NEXT_ACTION:
       case "process-next-job": {
         const result = await runWorkerAction(action, worker, null);
         await appendProcessOutput(output, inspector, createdRun.runId, action, result);
