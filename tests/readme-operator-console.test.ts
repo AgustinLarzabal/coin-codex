@@ -9,7 +9,7 @@ const EXPECTED_OPERATOR_CONSOLE_README_SNIPPETS = [
   "Seed Sources -> Create Crawl Run -> Process Jobs -> Inspect Results",
   ".private/sources.json",
   "--seed-file",
-  "Finite-choice prompts show available typed options inline after the default",
+  "finite-choice prompts show available typed options inline after the default",
   "Action [exit] (options: process-next-job, process-until-idle, inspect, toggle-debug, exit):",
   "process next job",
   "process until idle",
