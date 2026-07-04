@@ -39,6 +39,25 @@ import { createDatabase, registerDatabase, unregisterDatabase } from "../src/db/
 const resources: Array<{ databaseUrl: string; close: () => Promise<void> }> = [];
 const filesystemResources: Array<{ path: string }> = [];
 const SEEDED_SOURCE_ID = "src_test_opaque";
+const FIXTURE_RUN_SOURCE_CONFIG = {
+  adapter: "fake",
+  fixtureId: "fixture-run",
+  name: "Private Source Name",
+  domain: "private.example.test",
+  startUrl: "https://private.example.test/coins",
+} satisfies TestSourceConfig;
+const ACTION_PROMPT_OPTIONS = [
+  "process-next-job",
+  "process-until-idle",
+  "inspect",
+  "toggle-debug",
+  "exit",
+] as const;
+const DEFAULT_ACTION_PROMPT_INPUT = {
+  label: "Action",
+  defaultValue: "exit",
+  options: ACTION_PROMPT_OPTIONS,
+} satisfies OperatorConsolePromptInput;
 
 function createStubOperatorConsolePrompt(
   answers: string[],
@@ -149,6 +168,10 @@ async function writeSeedSourceFile(
   return sourceConfigPath;
 }
 
+async function writeFixtureRunSeedSourceFile() {
+  return writeSeedSourceFile(FIXTURE_RUN_SOURCE_CONFIG);
+}
+
 async function runWorkerUntilEmpty(
   databaseUrl: string,
   deps: Parameters<typeof executeCli>[1] = {},
@@ -188,14 +211,8 @@ describe("CLI ingestion skeleton", () => {
     expect(
       formatOperatorConsolePrompt({
         label: "Action",
-        defaultValue: "exit",
-        options: [
-          "process-next-job",
-          "process-until-idle",
-          "inspect",
-          "toggle-debug",
-          "exit",
-        ],
+        defaultValue: DEFAULT_ACTION_PROMPT_INPUT.defaultValue,
+        options: DEFAULT_ACTION_PROMPT_INPUT.options,
       }),
     ).toBe(
       "Action [exit] (options: process-next-job, process-until-idle, inspect, toggle-debug, exit): ",
@@ -258,13 +275,7 @@ describe("CLI ingestion skeleton", () => {
   it("processes the active run until idle and inspects it from the operator console", async () => {
     const { databaseUrl, db } = await createDatabaseUrl();
     const imageProviderFactory = createStubImageProviderFactory();
-    const sourceConfigPath = await writeSeedSourceFile({
-      adapter: "fake",
-      fixtureId: "fixture-run",
-      name: "Private Source Name",
-      domain: "private.example.test",
-      startUrl: "https://private.example.test/coins",
-    });
+    const sourceConfigPath = await writeFixtureRunSeedSourceFile();
 
     const output = await executeCli(["operator-console", "--seed-file", sourceConfigPath], {
       databaseUrl,
@@ -345,13 +356,7 @@ describe("CLI ingestion skeleton", () => {
 
   it("passes inline action options without exposing the legacy process-next alias", async () => {
     const { databaseUrl } = await createDatabaseUrl();
-    const sourceConfigPath = await writeSeedSourceFile({
-      adapter: "fake",
-      fixtureId: "fixture-run",
-      name: "Private Source Name",
-      domain: "private.example.test",
-      startUrl: "https://private.example.test/coins",
-    });
+    const sourceConfigPath = await writeFixtureRunSeedSourceFile();
     const { prompt, inputs } = createCapturingOperatorConsolePrompt([
       "",
       SEEDED_SOURCE_ID,
@@ -365,28 +370,14 @@ describe("CLI ingestion skeleton", () => {
       operatorConsolePrompt: prompt,
     });
 
-    expect(inputs.find((input) => input.label === "Action")).toEqual({
-      label: "Action",
-      defaultValue: "exit",
-      options: [
-        "process-next-job",
-        "process-until-idle",
-        "inspect",
-        "toggle-debug",
-        "exit",
-      ],
-    });
+    expect(inputs.find((input) => input.label === "Action")).toEqual(
+      DEFAULT_ACTION_PROMPT_INPUT,
+    );
   });
 
   it("passes option metadata only to finite-choice operator console prompts", async () => {
     const { databaseUrl } = await createDatabaseUrl();
-    const sourceConfigPath = await writeSeedSourceFile({
-      adapter: "fake",
-      fixtureId: "fixture-run",
-      name: "Private Source Name",
-      domain: "private.example.test",
-      startUrl: "https://private.example.test/coins",
-    });
+    const sourceConfigPath = await writeFixtureRunSeedSourceFile();
     const { prompt, inputs } = createCapturingOperatorConsolePrompt([
       "",
       "",
@@ -422,14 +413,8 @@ describe("CLI ingestion skeleton", () => {
       },
       {
         label: "Action",
-        defaultValue: "exit",
-        options: [
-          "process-next-job",
-          "process-until-idle",
-          "inspect",
-          "toggle-debug",
-          "exit",
-        ],
+        defaultValue: DEFAULT_ACTION_PROMPT_INPUT.defaultValue,
+        options: DEFAULT_ACTION_PROMPT_INPUT.options,
       },
       {
         label: "Process until idle cap",
@@ -437,14 +422,8 @@ describe("CLI ingestion skeleton", () => {
       },
       {
         label: "Action",
-        defaultValue: "exit",
-        options: [
-          "process-next-job",
-          "process-until-idle",
-          "inspect",
-          "toggle-debug",
-          "exit",
-        ],
+        defaultValue: DEFAULT_ACTION_PROMPT_INPUT.defaultValue,
+        options: DEFAULT_ACTION_PROMPT_INPUT.options,
       },
     ]);
   });
@@ -452,13 +431,7 @@ describe("CLI ingestion skeleton", () => {
   it("stops process-until-idle at the requested cap and reports queued work that remains", async () => {
     const { databaseUrl, db } = await createDatabaseUrl();
     const imageProviderFactory = createStubImageProviderFactory();
-    const sourceConfigPath = await writeSeedSourceFile({
-      adapter: "fake",
-      fixtureId: "fixture-run",
-      name: "Private Source Name",
-      domain: "private.example.test",
-      startUrl: "https://private.example.test/coins",
-    });
+    const sourceConfigPath = await writeFixtureRunSeedSourceFile();
 
     const output = await executeCli(["operator-console", "--seed-file", sourceConfigPath], {
       databaseUrl,
